@@ -15,7 +15,6 @@ import android.view.MenuItem;
 import android.view.SubMenu;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.MimeTypeMap;
 import android.widget.PopupMenu;
 
 import androidx.annotation.NonNull;
@@ -42,6 +41,7 @@ import com.poupa.vinylmusicplayer.misc.DialogAsyncTask;
 import com.poupa.vinylmusicplayer.misc.UpdateToastMediaScannerCompletionListener;
 import com.poupa.vinylmusicplayer.misc.WrappedAsyncTaskLoader;
 import com.poupa.vinylmusicplayer.model.Song;
+import com.poupa.vinylmusicplayer.onedrive.AudioFormats;
 import com.poupa.vinylmusicplayer.service.MusicService;
 import com.poupa.vinylmusicplayer.sort.FileSortOrder;
 import com.poupa.vinylmusicplayer.sort.SortOrder;
@@ -249,10 +249,17 @@ public class FoldersFragment
         ToolbarContentTintHelper.handleOnPrepareOptionsMenu(requireActivity(), layoutBinding.toolbar);
     }
 
-    static final FileFilter AUDIO_FILE_FILTER = file -> !file.isHidden() && (file.isDirectory() ||
-                        FileUtil.fileIsMimeType(file, "audio/*", MimeTypeMap.getSingleton()) ||
-                        FileUtil.fileIsMimeType(file, "application/opus", MimeTypeMap.getSingleton()) ||
-                        FileUtil.fileIsMimeType(file, "application/ogg", MimeTypeMap.getSingleton()));
+    /**
+     * Folders and audio files. Decided from the name first: File.isHidden(), isDirectory() and
+     * toURI() each stat the file (slow through Android's storage layer), so only entries that are
+     * not recognisably audio cost one stat, to tell folders apart. Audio is recognised by
+     * extension (older MIME tables lack .opus, .ogg, .m4a...) and by the platform MIME table.
+     */
+    static final FileFilter AUDIO_FILE_FILTER = file -> {
+        final String name = file.getName();
+        if (name.startsWith(".")) return false; // hidden: what File.isHidden() checks on Android
+        return AudioFormats.isAudioFileName(name) || file.isDirectory();
+    };
 
     @Override
     public void onCrumbSelection(final BreadCrumbLayout.Crumb crumb, int index) {
@@ -318,7 +325,11 @@ public class FoldersFragment
         if (canonicalFile.isDirectory()) {
             setCrumb(new BreadCrumbLayout.Crumb(canonicalFile), true);
         } else {
-            final FileFilter fileFilter = pathname -> !pathname.isDirectory() && AUDIO_FILE_FILTER.accept(pathname);
+            // Audio files only: the name decides, the stat only confirms an audio-named entry is a file
+            final FileFilter fileFilter = pathname -> {
+                final String name = pathname.getName();
+                return !name.startsWith(".") && AudioFormats.isAudioFileName(name) && !pathname.isDirectory();
+            };
             new ListSongsAsyncTask(getActivity(), null, (songs, extra) -> {
                 int startIndex = -1;
                 int size = songs.size();
@@ -598,19 +609,12 @@ public class FoldersFragment
         protected ArrayList<Song> doInBackground(final LoadingInfo... params) {
             try {
                 final LoadingInfo info = params[0];
-                final List<File> files = FileUtil.listFilesDeep(info.files.values(), info.fileFilter);
-
                 if (isCancelled() || checkContextReference() == null || checkCallbackReference() == null)
                     return null;
 
-                Collections.sort(files, info.fileComparator);
-
-                final Context context = checkContextReference();
-                if (isCancelled() || context == null || checkCallbackReference() == null) {
-                    return null;
-                }
-
-                return FileUtil.matchFilesWithMediaStore(files);
+                // Resolved from the library index: only playable songs are wanted, and the
+                // library knows where they are, so the folders need not be walked
+                return FileUtil.listSongsDeep(info.files.values(), info.fileFilter, info.fileComparator);
             } catch (Exception e) {
                 e.printStackTrace();
                 cancel(false);

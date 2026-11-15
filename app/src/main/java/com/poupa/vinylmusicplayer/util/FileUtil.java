@@ -19,8 +19,14 @@ import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -41,6 +47,79 @@ public final class FileUtil {
             }
         }
         return songs;
+    }
+
+    /**
+     * The library songs that {@code matchFilesWithMediaStore(listFilesDeep(roots, fileFilter))}
+     * finds, in {@code order}, without walking the folders.
+     *
+     * Only songs in the library can be played, and the library already knows their paths. So
+     * instead of visiting every entry below the roots (one file system call each, slow on big
+     * trees and through Android's storage layer), this picks the songs located below the roots
+     * and checks only them and their folders: each folder on the way must pass the filter (as the
+     * walk requires), and each song must still be a file.
+     */
+    @NonNull
+    public static ArrayList<Song> listSongsDeep(@NonNull Collection<File> roots, @NonNull FileFilter fileFilter,
+                                                @NonNull Comparator<File> order) {
+        final Discography discography = Discography.getInstance();
+        final List<Song> library = discography.getAllSongs(null);
+        final Map<String, Boolean> folderAccepted = new HashMap<>();
+        final Set<String> foundPaths = new HashSet<>();
+        final Map<File, Song> songOfFile = new IdentityHashMap<>();
+        final List<File> files = new ArrayList<>();
+
+        for (final File root : roots) {
+            final String rootPath = safeGetCanonicalPath(root);
+            if (!root.isDirectory()) {
+                // A file selected on its own: the walk keeps it when the filter accepts it
+                if (fileFilter.accept(root) && foundPaths.add(rootPath)) {
+                    final Song song = discography.getSongByPath(rootPath);
+                    if (!song.equals(Song.EMPTY_SONG)) {
+                        final File file = new File(rootPath);
+                        songOfFile.put(file, song);
+                        files.add(file);
+                    }
+                }
+                continue;
+            }
+            final String prefix = rootPath.endsWith(File.separator) ? rootPath : rootPath + File.separator;
+            for (final Song song : library) {
+                final String path = song.data;
+                if (!path.startsWith(prefix) || foundPaths.contains(path)) continue;
+                if (!foldersPass(prefix, path, fileFilter, folderAccepted)) continue;
+                final File file = new File(path);
+                if (!fileFilter.accept(file) || !file.isFile()) continue;
+                foundPaths.add(path);
+                songOfFile.put(file, song);
+                files.add(file);
+            }
+        }
+
+        Collections.sort(files, order);
+        final ArrayList<Song> songs = new ArrayList<>(files.size());
+        for (final File file : files) {
+            songs.add(songOfFile.get(file));
+        }
+        return songs;
+    }
+
+    /** Whether every folder between {@code prefix} and the file at {@code path} passes the filter. */
+    private static boolean foldersPass(@NonNull String prefix, @NonNull String path, @NonNull FileFilter filter,
+                                       @NonNull Map<String, Boolean> cache) {
+        int from = prefix.length();
+        int separator;
+        while ((separator = path.indexOf(File.separatorChar, from)) >= 0) {
+            final String folder = path.substring(0, separator);
+            Boolean accepted = cache.get(folder);
+            if (accepted == null) {
+                accepted = filter.accept(new File(folder));
+                cache.put(folder, accepted);
+            }
+            if (!accepted) return false;
+            from = separator + 1;
+        }
+        return true;
     }
 
     @NonNull

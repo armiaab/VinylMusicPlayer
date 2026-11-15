@@ -3,6 +3,7 @@ package com.poupa.vinylmusicplayer.discog;
 import android.content.Context;
 import android.os.Build;
 import android.os.Handler;
+import android.provider.MediaStore;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -14,10 +15,13 @@ import com.poupa.vinylmusicplayer.model.Album;
 import com.poupa.vinylmusicplayer.model.Artist;
 import com.poupa.vinylmusicplayer.model.Genre;
 import com.poupa.vinylmusicplayer.model.Song;
+import com.poupa.vinylmusicplayer.onedrive.OneDrive;
+import com.poupa.vinylmusicplayer.onedrive.OneDriveLibrary;
 import com.poupa.vinylmusicplayer.provider.BlacklistStore;
 import com.poupa.vinylmusicplayer.sort.SongSortOrder;
 import com.poupa.vinylmusicplayer.ui.activities.base.AbsMusicServiceActivity;
 import com.poupa.vinylmusicplayer.util.FileUtil;
+import com.poupa.vinylmusicplayer.util.OopsHandler;
 import com.poupa.vinylmusicplayer.util.PreferenceUtil;
 import com.poupa.vinylmusicplayer.util.StringUtil;
 
@@ -35,6 +39,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -44,9 +53,34 @@ import java.util.function.Predicate;
  */
 
 public class Discography implements MusicServiceEventListener {
+    /** Tag reading is I/O bound: a few threads overlap the waits without crowding the device. */
+    private static final int TAG_READ_THREADS = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors()));
+
+    private static final ThreadFactory TAG_READER_THREAD_FACTORY = runnable -> {
+        final Thread thread = new Thread(() -> {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+            runnable.run();
+        }, "DiscographyTagReader");
+        thread.setDaemon(true);
+        return thread;
+    };
+
+    /** A MediaStore song checked off the cache lock; {@code tagsRead} when its tags were extracted. */
+    private static final class PreparedSong {
+        @NonNull final Song song;
+        final boolean tagsRead;
+
+        PreparedSong(@NonNull Song song, boolean tagsRead) {
+            this.song = song;
+            this.tagsRead = tagsRead;
+        }
+    }
+
     // TODO wrap this inside the MemCache class
     private final DB database = new DB();
     private final MemCache cache = new MemCache();
+    /** What each OneDrive song in the cache was added with, to skip unchanged ones (guarded by cache). */
+    private final Map<Long, String> oneDriveSignatures = new HashMap<>();
 
     private final Map<AbsMusicServiceActivity, Handler> attachedActivitiesAndQueue = new HashMap<>();
     private static final String TASK_QUEUE_COALESCENCE_TOKEN = "Discography.triggerSyncWithMediaStore";
@@ -68,6 +102,8 @@ public class Discography implements MusicServiceEventListener {
                 // These operations are IO intensive and may take time, depending on the library size
                 // delay it till UI is availble
                 fetchAllSongs();
+                // OneDrive songs are not stored with the others: show them right away too
+                OneDrive.publishToLibrary();
                 triggerSyncWithMediaStore(false);
             }
         }
@@ -98,19 +134,22 @@ public class Discography implements MusicServiceEventListener {
         }
     }
 
+    private static final BiPredicate<Song, Song> IS_METADATA_OBSOLETE = (final @NonNull Song incomingSong, final @NonNull Song cachedSong) -> {
+        if (incomingSong.dateAdded != cachedSong.dateAdded) return true;
+        if (incomingSong.dateModified != cachedSong.dateModified) return true;
+        return (!incomingSong.data.equals(cachedSong.data));
+    };
+
+    /**
+     * @param tagsAlreadyRead the tags of {@code song} were extracted beforehand (off the cache lock)
+     */
     @NonNull
-    private Song getOrAddSong(@NonNull final Song song, @NonNull final SyncWithMediaStoreAsyncTask.Progress progress) {
+    private Song getOrAddSong(@NonNull final Song song, @NonNull final SyncWithMediaStoreAsyncTask.Progress progress, final boolean tagsAlreadyRead) {
         synchronized (cache) {
             final Song discogSong = getSong(song.id);
             boolean existsAndObsolete = false;
             if (!discogSong.equals(Song.EMPTY_SONG)) {
-                final BiPredicate<Song, Song> isMetadataObsolete = (final @NonNull Song incomingSong, final @NonNull Song cachedSong) -> {
-                    if (incomingSong.dateAdded != cachedSong.dateAdded) return true;
-                    if (incomingSong.dateModified != cachedSong.dateModified) return true;
-                    return (!incomingSong.data.equals(cachedSong.data));
-                };
-
-                existsAndObsolete = isMetadataObsolete.test(song, discogSong);
+                existsAndObsolete = IS_METADATA_OBSOLETE.test(song, discogSong);
                 if (existsAndObsolete) {
                     removeSongById(song.id);
                 } else {
@@ -118,7 +157,7 @@ public class Discography implements MusicServiceEventListener {
                 }
             }
 
-            addSong(song, false);
+            addSong(song, false, !tagsAlreadyRead);
             if (existsAndObsolete) {++ progress.updated;}
             else {++ progress.added;}
 
@@ -126,12 +165,26 @@ public class Discography implements MusicServiceEventListener {
         }
     }
 
+    /** Whether the song is new or changed since it was added, so its tags have to be read. */
+    private boolean needsTags(@NonNull final Song song) {
+        synchronized (cache) {
+            final Song cached = cache.songsById.get(song.id);
+            return cached == null || IS_METADATA_OBSOLETE.test(song, cached);
+        }
+    }
+
     @NonNull
     public Song getSong(long songId) {
+        Song song;
         synchronized (cache) {
-            Song song = cache.songsById.get(songId);
-            return song == null ? Song.EMPTY_SONG : song;
+            song = cache.songsById.get(songId);
         }
+        if (song == null && OneDriveLibrary.isOneDriveId(songId)) {
+            // A OneDrive song kept in a queue, history or play count (looked up outside the
+            // cache lock: the OneDrive library calls back into Discography)
+            song = OneDrive.getSong(songId);
+        }
+        return song == null ? Song.EMPTY_SONG : song;
     }
 
     @NonNull
@@ -139,14 +192,23 @@ public class Discography implements MusicServiceEventListener {
         ArrayList<Long> orphanSongIds = new ArrayList<>();
         ArrayList<Song> songs = new ArrayList<>();
 
+        // OneDrive ids are resolved after the cache lock is released, keeping their place
+        final ArrayList<Song> lookups = new ArrayList<>(songIds.size());
         synchronized (cache) {
             for (Long id : songIds) {
-                Song song = cache.songsById.get(id);
-                if (song != null) {
-                    songs.add(song);
-                } else if (orphanIdsCleaner != null) {
-                    orphanSongIds.add(id);
-                }
+                lookups.add(cache.songsById.get(id));
+            }
+        }
+        for (int i = 0; i < songIds.size(); i++) {
+            final long id = songIds.get(i);
+            Song song = lookups.get(i);
+            if (song == null && OneDriveLibrary.isOneDriveId(id)) {
+                song = OneDrive.getSong(id);
+            }
+            if (song != null) {
+                songs.add(song);
+            } else if (orphanIdsCleaner != null) {
+                orphanSongIds.add(id);
             }
         }
 
@@ -164,15 +226,8 @@ public class Discography implements MusicServiceEventListener {
     @NonNull
     public Song getSongByPath(@NonNull final String path) {
         synchronized (cache) {
-            Song matchingSong = Song.EMPTY_SONG;
-
-            for (Song song : cache.songsById.values()) {
-                if (song.data.equals(path)) {
-                    matchingSong = song;
-                    break;
-                }
-            }
-            return matchingSong;
+            final Song song = cache.songsByPath.get(path);
+            return song == null ? Song.EMPTY_SONG : song;
         }
     }
 
@@ -239,6 +294,7 @@ public class Discography implements MusicServiceEventListener {
         synchronized (cache) {
             ArrayList<Album> fullAlbums = new ArrayList<>();
             for (Map<Long, MemCache.AlbumSlice> albumsByArtist : cache.albumsByAlbumIdAndArtistId.values()) {
+                if (albumsByArtist.isEmpty()) continue; // no songs: not an album to show
                 fullAlbums.add(mergeFullAlbum(albumsByArtist.values()));
             }
 
@@ -299,13 +355,17 @@ public class Discography implements MusicServiceEventListener {
     }
 
     private void addSong(@NonNull Song song, boolean cacheOnly) {
+        addSong(song, cacheOnly, !cacheOnly);
+    }
+
+    private void addSong(@NonNull Song song, boolean cacheOnly, boolean extractTags) {
         synchronized (cache) {
             // Race condition check: If the song has been added -> skip
             if (cache.songsById.containsKey(song.id)) {
                 return;
             }
 
-            if (!cacheOnly) {
+            if (extractTags) {
                 TagExtractor.extractTags(song);
             }
 
@@ -318,6 +378,11 @@ public class Discography implements MusicServiceEventListener {
             };
             normNames.accept(song.albumArtistNames);
             normNames.accept(song.artistNames);
+            // Albums are grouped by artist: a song without any would join no album and leave
+            // an empty one behind. Use MediaStore's unknown artist, as for untagged local files.
+            if (song.artistNames.isEmpty() && song.albumArtistNames.isEmpty()) {
+                song.artistNames = new ArrayList<>(List.of(MediaStore.UNKNOWN_STRING));
+            }
             song.albumName = StringUtil.unicodeNormalize(song.albumName);
             song.title = StringUtil.unicodeNormalize(song.title);
             normNames.accept(song.genres);
@@ -396,21 +461,59 @@ public class Discography implements MusicServiceEventListener {
         final SyncWithMediaStoreAsyncTask.Progress counters = new SyncWithMediaStoreAsyncTask.Progress();
         final ArrayList<Song> alienSongs = MediaStoreBridge.getAllSongs(context);
         final Set<Long> importedSongIds = new HashSet<>();
+
+        // The slow parts are file I/O: checking that each file still exists, and reading the tags
+        // of new or changed songs. They run on a few threads, outside the cache lock (so the UI
+        // is not blocked meanwhile). Songs are then added one at a time, in MediaStore order, as
+        // soon as they are ready.
+        final List<Song> candidates = new ArrayList<>(alienSongs.size());
         for (final Song song : alienSongs) {
             if (isNotWhiteListed.test(song)) continue;
             if (isBlackListed.test(song)) continue;
-            if (isZombie.test(song)) continue;
+            candidates.add(song);
+        }
+        TagExtractor.prepareForParallelReads();
+        final ExecutorService readers = Executors.newFixedThreadPool(TAG_READ_THREADS, TAG_READER_THREAD_FACTORY);
+        try {
+            final List<Future<PreparedSong>> prepared = new ArrayList<>(candidates.size());
+            for (final Song song : candidates) {
+                prepared.add(readers.submit(() -> {
+                    if (isZombie.test(song)) return null;
+                    final boolean readTags = needsTags(song);
+                    if (readTags) TagExtractor.extractTags(song);
+                    return new PreparedSong(song, readTags);
+                }));
+            }
+            for (int i = 0; i < prepared.size(); i++) {
+                PreparedSong ready;
+                try {
+                    ready = prepared.get(i).get();
+                } catch (ExecutionException e) {
+                    // Should not happen (the extractor catches its own errors): do it here instead
+                    OopsHandler.collectStackTrace(e);
+                    ready = new PreparedSong(candidates.get(i), false);
+                }
+                if (ready == null) continue; // zombie
 
-            final Song matchedSong = getOrAddSong(song, counters);
-            importedSongIds.add(matchedSong.id);
+                final Song matchedSong = getOrAddSong(ready.song, counters, ready.tagsRead);
+                importedSongIds.add(matchedSong.id);
 
-            progressUpdater.accept(counters);
+                progressUpdater.accept(counters);
+            }
+        } catch (InterruptedException e) {
+            // Incomplete sync: do not clean "orphans" that were simply not processed
+            Thread.currentThread().interrupt();
+            return counters;
+        } finally {
+            readers.shutdownNow();
         }
 
         synchronized (cache) {
             // Clean orphan songs (removed from MediaStore)
             final Set<Long> cacheSongsId = new HashSet<>(cache.songsById.keySet()); // make a copy
             cacheSongsId.removeAll(importedSongIds);
+            // OneDrive songs are not in MediaStore: the OneDrive scan maintains them
+            cacheSongsId.removeIf(OneDriveLibrary::isOneDriveId);
             removeSongsById(cacheSongsId);
 
             counters.removed = cacheSongsId.size();
@@ -471,11 +574,9 @@ public class Discography implements MusicServiceEventListener {
         synchronized (cache) {
             ArrayList<Long> matchingSongIds = new ArrayList<>();
             for (String path : paths) {
-                for (Song song : cache.songsById.values()) {
-                    if (song.data.equals(path)) {
-                        matchingSongIds.add(song.id);
-                        break;
-                    }
+                final Song song = cache.songsByPath.get(path);
+                if (song != null) {
+                    matchingSongIds.add(song.id);
                 }
             }
             removeSongsById(matchingSongIds);
@@ -499,6 +600,50 @@ public class Discography implements MusicServiceEventListener {
     void clear() {
         database.clear();
         cache.clear();
+        synchronized (cache) {
+            oneDriveSignatures.clear();
+        }
+    }
+
+    /**
+     * Shows exactly these OneDrive songs in the library (Songs, Albums, Artists, Genres, search).
+     * They live in memory only: the OneDrive library keeps them, and puts them back after a
+     * restart or a reset. Unchanged songs are left as they are.
+     */
+    public void replaceOneDriveSongs(@NonNull final Collection<Song> songs) {
+        boolean changed = false;
+        synchronized (cache) {
+            final Map<Long, Song> incoming = new HashMap<>();
+            for (final Song song : songs) incoming.put(song.id, song);
+
+            // Drop those no longer listed, or changed (they are added again below)
+            for (final Long id : new ArrayList<>(cache.songsById.keySet())) {
+                if (!OneDriveLibrary.isOneDriveId(id)) continue;
+                final Song next = incoming.get(id);
+                if (next == null || !oneDriveSignature(next).equals(oneDriveSignatures.get(id))) {
+                    cache.removeSongById(id);
+                    oneDriveSignatures.remove(id);
+                    changed = true;
+                }
+            }
+            for (final Song song : songs) {
+                if (cache.songsById.containsKey(song.id)) continue;
+                final String signature = oneDriveSignature(song); // before addSong normalizes names
+                addSong(song, true);
+                oneDriveSignatures.put(song.id, signature);
+                changed = true;
+            }
+        }
+        if (changed) notifyDiscographyChanged();
+    }
+
+    @NonNull
+    private static String oneDriveSignature(@NonNull final Song song) {
+        final char sep = '\u0000';
+        return song.data + sep + song.dateModified + sep + song.albumId + sep + song.duration
+                + sep + song.title + sep + song.artistNames + sep + song.albumArtistNames
+                + sep + song.albumName + sep + song.trackNumber + sep + song.discNumber
+                + sep + song.year + sep + song.genres;
     }
 
     private void fetchAllSongs() {

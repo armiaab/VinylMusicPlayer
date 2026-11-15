@@ -17,6 +17,12 @@
             android:icon="@drawable/ic_folder_white_24dp"
             android:title="@string/sd_card"
             android:visible="false" />
+        <!-- Shown when the build has a OneDrive client id and the device runs Android 6+ -->
+        <item
+            android:id="@+id/nav_onedrive"
+            android:icon="@drawable/ic_cloud_white_24dp"
+            android:title="@string/onedrive"
+            android:visible="false" />
     </group>
 
     <group android:checkableBehavior="none">

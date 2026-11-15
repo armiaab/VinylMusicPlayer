@@ -16,6 +16,7 @@ import com.poupa.vinylmusicplayer.dialogs.helper.DeleteSongsHelper;
 import com.poupa.vinylmusicplayer.helper.MusicPlayerRemote;
 import com.poupa.vinylmusicplayer.interfaces.PaletteColorHolder;
 import com.poupa.vinylmusicplayer.model.Song;
+import com.poupa.vinylmusicplayer.onedrive.OneDrive;
 import com.poupa.vinylmusicplayer.ui.activities.tageditor.AbsTagEditorActivity;
 import com.poupa.vinylmusicplayer.ui.activities.tageditor.SongTagEditorActivity;
 import com.poupa.vinylmusicplayer.util.MusicUtil;
@@ -29,6 +30,12 @@ public class SongMenuHelper {
     public static final int MENU_RES = R.menu.menu_item_song;
 
     public static boolean handleMenuClick(@NonNull FragmentActivity activity, @NonNull Song song, int menuItemId) {
+        if (menuItemId != R.id.action_play_next && menuItemId != R.id.action_add_to_current_playing) {
+            // Everything else needs a local MediaStore file: for a OneDrive song, its offline copy
+            final Song local = OneDrive.requireLocalSong(activity, song);
+            if (local == null) return true;
+            song = local;
+        }
         if (menuItemId == R.id.action_set_as_ringtone) {
             if (RingtoneManager.requiresDialog(activity)) {
                 RingtoneManager.showDialog(activity);

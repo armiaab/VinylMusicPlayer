@@ -21,6 +21,7 @@ Additional features:
 * Android Auto support
 * ReplayGain
 * SD Card write access
+* OneDrive: browse and stream your music, kept offline once played ([setup](docs/ONEDRIVE.md))
 * [...and more!](https://github.com/VinylMusicPlayer/VinylMusicPlayer/blob/master/CHANGELOG.md)
 
 ![Screenshots](./art/art.png?raw=true)

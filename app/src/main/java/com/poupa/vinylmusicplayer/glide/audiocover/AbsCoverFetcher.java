@@ -188,6 +188,13 @@ public abstract class AbsCoverFetcher implements DataFetcher<InputStream> {
         return null;
     }
 
+    /** Last resort for songs with no artwork at all: a random photo (see {@link RandomArtwork}). */
+    @Nullable
+    InputStream loadRandomArtwork(@NonNull final Song song) {
+        stream = RandomArtwork.load(App.getStaticContext(), song);
+        return stream;
+    }
+
     @Override
     public void cleanup() {
         // already cleaned up in loadData and ByteArrayInputStream will be GC'd

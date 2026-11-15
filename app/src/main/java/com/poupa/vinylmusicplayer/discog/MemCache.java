@@ -38,6 +38,8 @@ class MemCache {
     ConsistencyState consistencyState = ConsistencyState.UNINITIALIZED;
 
     final Map<Long, Song> songsById = new HashMap<>();
+    /** File path index: lookups by path (Folders view, cover loading) are O(1) instead of a library scan. */
+    final Map<String, Song> songsByPath = new HashMap<>();
 
     final Map<String, Artist> artistsByName = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     final Map<Long, Artist> artistsById = new HashMap<>();
@@ -71,6 +73,7 @@ class MemCache {
         }
 
         songsById.put(song.id, song);
+        songsByPath.put(song.data, song);
 
         // Only sort albums after the song has been added
         for (Long artistId : albums.keySet()) {
@@ -140,11 +143,15 @@ class MemCache {
 
             // ---- Remove the song from the memory cache
             songsById.remove(songId);
+            if (songsByPath.get(song.data) == song) {
+                songsByPath.remove(song.data);
+            }
         }
     }
 
     synchronized void clear() {
         songsById.clear();
+        songsByPath.clear();
 
         artistsByName.clear();
         artistsById.clear();

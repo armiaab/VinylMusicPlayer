@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="onedrive">OneDrive</string>
+    <string name="onedrive_sign_in">Sign in to OneDrive</string>
+    <string name="onedrive_sign_in_explanation">Browse the music in your OneDrive and play it here. Songs stream right away, in their original quality, and are saved to Music/OneDrive once played, so they work offline afterwards.</string>
+    <string name="onedrive_sign_out">Sign out of OneDrive</string>
+    <string name="onedrive_sign_out_confirm">Sign out of OneDrive on this device? Songs already saved offline stay in your library.</string>
+    <string name="onedrive_signed_in_as">Signed in as %s</string>
+    <string name="onedrive_sign_in_failed">OneDrive sign-in failed: %s</string>
+    <string name="onedrive_sign_in_cancelled">OneDrive sign-in cancelled</string>
+    <string name="onedrive_no_browser">No browser is available to sign in with</string>
+    <string name="onedrive_refresh">Refresh</string>
+    <string name="onedrive_play_all">Play all</string>
+    <string name="onedrive_loading">Loading…</string>
+    <string name="onedrive_empty_folder">No folders or music here</string>
+    <string name="onedrive_load_failed">Could not load this folder: %s</string>
+    <string name="onedrive_offline_hint">You are offline. Songs you already played are in your library, under Music/OneDrive.</string>
+    <string name="onedrive_folder_items">%d items</string>
+    <string name="onedrive_offline">Offline</string>
+    <string name="onedrive_buffering">Buffering from OneDrive…</string>
+    <string name="onedrive_buffering_percent">Loading from OneDrive… %d%%</string>
+    <string name="onedrive_buffering_title">Loading “%s” from OneDrive</string>
+    <string name="onedrive_buffering_progress">%1$d%% · %2$s of %3$s</string>
+    <string name="onedrive_whole_file_needed">“%1$s” has video in it: the whole file (%2$s) downloads first, then its audio plays. It is kept for offline listening after that.</string>
+    <string name="onedrive_buffering_channel">OneDrive loading</string>
+    <string name="onedrive_buffering_channel_description">Progress while a OneDrive song loads</string>
+    <string name="onedrive_stream_failed">Could not stream from OneDrive: %s</string>
+    <string name="onedrive_stream_failed_no_reason">Could not stream from OneDrive</string>
+    <string name="onedrive_not_offline_yet">Available once this OneDrive song has been played and saved offline</string>
+    <string name="onedrive_no_music_here">No music in this folder</string>
+    <string name="onedrive_scanning">Scanning OneDrive for music…</string>
+    <string name="onedrive_scan_done">OneDrive: %1$d songs in your library (%2$d new, %3$d removed)</string>
+    <string name="onedrive_scan_failed">OneDrive scan failed: %s</string>
+
+    <!-- Random artwork (not OneDrive specific) -->
+    <string name="pref_title_random_artwork">Random artwork</string>
+    <string name="pref_summary_random_artwork">Songs without artwork get a random photo from Unsplash when played. Each song keeps its photo, stored on the device. Follows the download setting above.</string>
+</resources>

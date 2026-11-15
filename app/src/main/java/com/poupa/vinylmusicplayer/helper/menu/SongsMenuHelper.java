@@ -8,8 +8,10 @@ import com.poupa.vinylmusicplayer.dialogs.AddToPlaylistDialog;
 import com.poupa.vinylmusicplayer.dialogs.helper.DeleteSongsHelper;
 import com.poupa.vinylmusicplayer.helper.MusicPlayerRemote;
 import com.poupa.vinylmusicplayer.model.Song;
+import com.poupa.vinylmusicplayer.onedrive.OneDrive;
 
 import java.util.Collection;
+import java.util.List;
 
 /**
  * @author Karim Abou Zeid (kabouzeid)
@@ -21,9 +23,16 @@ public class SongsMenuHelper {
         } else if (menuItemId == R.id.action_add_to_current_playing) {
             MusicPlayerRemote.enqueue(songs);
         } else if (menuItemId == R.id.action_add_to_playlist) {
-            AddToPlaylistDialog.create(songs).show(activity.getSupportFragmentManager(), "ADD_PLAYLIST");
+            // Playlists keep MediaStore songs: OneDrive songs take part once saved offline
+            final List<Song> local = OneDrive.requireLocalSongs(activity, songs);
+            if (!local.isEmpty()) {
+                AddToPlaylistDialog.create(local).show(activity.getSupportFragmentManager(), "ADD_PLAYLIST");
+            }
         } else if (menuItemId == R.id.action_delete_from_device) {
-            DeleteSongsHelper.delete(songs, activity.getSupportFragmentManager(), "DELETE_SONGS");
+            final List<Song> local = OneDrive.requireLocalSongs(activity, songs);
+            if (!local.isEmpty()) {
+                DeleteSongsHelper.delete(local, activity.getSupportFragmentManager(), "DELETE_SONGS");
+            }
         }
     }
 }

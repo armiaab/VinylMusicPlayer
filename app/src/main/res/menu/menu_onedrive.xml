@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_shuffle_all"
+        android:icon="@drawable/ic_shuffle_white_24dp"
+        android:title="@string/action_shuffle_all"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_onedrive_play_all"
+        android:title="@string/onedrive_play_all"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_onedrive_refresh"
+        android:title="@string/onedrive_refresh"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_onedrive_sign_out"
+        android:title="@string/onedrive_sign_out"
+        app:showAsAction="never" />
+</menu>

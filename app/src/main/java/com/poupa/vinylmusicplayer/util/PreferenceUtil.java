@@ -92,6 +92,7 @@ public final class PreferenceUtil {
     public static final String AUDIO_DUCKING = PrefKey.exportableKey("audio_ducking");
     @NonNls
     public static final String GAPLESS_PLAYBACK = PrefKey.exportableKey("gapless_playback");
+    public static final String RANDOM_ARTWORK = PrefKey.exportableKey("random_artwork");
     public static final String EQUALIZER = PrefKey.exportableKey("equalizer");
 
     public static final String LAST_ADDED_CUTOFF_V2 = PrefKey.exportableKey("last_added_interval_v2");
@@ -350,6 +351,11 @@ public final class PreferenceUtil {
         mPreferences.edit()
                 .putBoolean(GAPLESS_PLAYBACK, value)
                 .apply();
+    }
+
+    /** Songs without artwork get a random photo while playing (see RandomArtwork). */
+    public boolean randomArtwork() {
+        return mPreferences.getBoolean(RANDOM_ARTWORK, true);
     }
 
     public boolean gaplessPlayback() {

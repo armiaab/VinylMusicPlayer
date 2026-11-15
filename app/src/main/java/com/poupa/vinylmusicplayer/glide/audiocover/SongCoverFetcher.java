@@ -46,6 +46,9 @@ public class SongCoverFetcher extends AbsCoverFetcher {
         if (input == null) {
             input = loadCoverFromFolderImage(new File(model.song.data));
         }
+        if (input == null) {
+            input = loadRandomArtwork(model.song);
+        }
         return input;
     }
 }

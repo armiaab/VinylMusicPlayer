@@ -14,6 +14,13 @@
             android:positiveButtonText="@null"
             android:title="@string/pref_title_auto_download_metadata" />
 
+        <com.kabouzeid.appthemehelper.common.prefs.supportv7.ATESwitchPreference
+            app:iconSpaceReserved="false"
+            android:defaultValue="true"
+            android:key="random_artwork"
+            android:summary="@string/pref_summary_random_artwork"
+            android:title="@string/pref_title_random_artwork" />
+
     </com.kabouzeid.appthemehelper.common.prefs.supportv7.ATEPreferenceCategory>
 
 </androidx.preference.PreferenceScreen>

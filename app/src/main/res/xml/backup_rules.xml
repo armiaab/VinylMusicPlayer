@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Auto Backup rules for Android 11 and lower. Everything not excluded here is backed up. -->
+<full-backup-content>
+    <!-- OneDrive: the tokens are encrypted with a device-bound key and cannot be restored
+         elsewhere; the item registry belongs to this device's offline copies. -->
+    <exclude domain="sharedpref" path="onedrive_tokens.xml" />
+    <exclude domain="sharedpref" path="onedrive_scan.xml" />
+    <exclude domain="database" path="onedrive.db" />
+</full-backup-content>

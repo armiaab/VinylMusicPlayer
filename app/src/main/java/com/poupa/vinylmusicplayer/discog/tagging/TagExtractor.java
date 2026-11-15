@@ -13,10 +13,27 @@ import com.poupa.vinylmusicplayer.util.SAFUtil;
 import com.poupa.vinylmusicplayer.util.SafeToast;
 
 import org.jaudiotagger.audio.AudioFile;
+import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.audio.mp3.MP3File;
 import org.jaudiotagger.tag.FieldKey;
 import org.jaudiotagger.tag.KeyNotFoundException;
 import org.jaudiotagger.tag.Tag;
+import org.jaudiotagger.tag.TagOptionSingleton;
+import org.jaudiotagger.tag.id3.ID3v22Frames;
+import org.jaudiotagger.tag.id3.ID3v23Frames;
+import org.jaudiotagger.tag.id3.ID3v24Frames;
+import org.jaudiotagger.tag.id3.ID3v2ChapterFrames;
+import org.jaudiotagger.tag.id3.valuepair.ChannelTypes;
+import org.jaudiotagger.tag.id3.valuepair.EventTimingTimestampTypes;
+import org.jaudiotagger.tag.id3.valuepair.EventTimingTypes;
+import org.jaudiotagger.tag.id3.valuepair.InterpolationTypes;
+import org.jaudiotagger.tag.id3.valuepair.ReceivedAsTypes;
+import org.jaudiotagger.tag.id3.valuepair.SynchronisedLyricsContentType;
+import org.jaudiotagger.tag.id3.valuepair.TextEncoding;
+import org.jaudiotagger.tag.lyrics3.Lyrics3v2Fields;
+import org.jaudiotagger.tag.reference.GenreTypes;
+import org.jaudiotagger.tag.reference.Languages;
+import org.jaudiotagger.tag.reference.PictureTypes;
 
 import java.util.List;
 
@@ -51,9 +68,43 @@ public class TagExtractor {
         } catch (NumberFormatException ignored) {return defaultValue;}
     };
     private static final Func3Args<Tag, FieldKey, List<String>, List<String>> safeGetTagAsList = (tags, tag, defaultValue) -> {
-        try {return MultiValuesTagUtil.splitIfNeeded(tags.getAll(tag));}
+        try {
+            // An absent field reads as an empty list: keep the MediaStore value then, as
+            // safeGetTag does for single values (an untagged recording keeps "<unknown>" artist)
+            final List<String> values = MultiValuesTagUtil.splitIfNeeded(tags.getAll(tag));
+            return values.isEmpty() ? defaultValue : values;
+        }
         catch (KeyNotFoundException ignored) {return defaultValue;}
     };
+
+    /**
+     * Creates jaudiotagger's lazily initialized singletons on the calling thread, so that tags
+     * can then be extracted on several threads without racing to create them (they are not
+     * created under a lock). Cheap after the first call.
+     */
+    public static void prepareForParallelReads() {
+        try {
+            TagOptionSingleton.getInstance();
+            AudioFileIO.getDefaultAudioFileIO();
+            ID3v22Frames.getInstanceOf();
+            ID3v23Frames.getInstanceOf();
+            ID3v24Frames.getInstanceOf();
+            ID3v2ChapterFrames.getInstanceOf();
+            TextEncoding.getInstanceOf();
+            GenreTypes.getInstanceOf();
+            Languages.getInstanceOf();
+            PictureTypes.getInstanceOf();
+            ChannelTypes.getInstanceOf();
+            EventTimingTimestampTypes.getInstanceOf();
+            EventTimingTypes.getInstanceOf();
+            InterpolationTypes.getInstanceOf();
+            ReceivedAsTypes.getInstanceOf();
+            SynchronisedLyricsContentType.getInstanceOf();
+            Lyrics3v2Fields.getInstanceOf();
+        } catch (@NonNull RuntimeException | NoClassDefFoundError e) {
+            OopsHandler.collectStackTrace(e);
+        }
+    }
 
     public static void extractTags(@NonNull Song song) {
         final Context context = App.getStaticContext();

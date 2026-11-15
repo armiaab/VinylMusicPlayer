@@ -45,6 +45,7 @@ import com.poupa.vinylmusicplayer.appwidgets.AppWidgetSmall;
 import com.poupa.vinylmusicplayer.discog.Discography;
 import com.poupa.vinylmusicplayer.discog.tagging.MultiValuesTagUtil;
 import com.poupa.vinylmusicplayer.glide.audiocover.SongCover;
+import com.poupa.vinylmusicplayer.glide.audiocover.RandomArtwork;
 import com.poupa.vinylmusicplayer.glide.audiocover.SongCoverFetcher;
 import com.poupa.vinylmusicplayer.helper.PendingIntentCompat;
 import com.poupa.vinylmusicplayer.helper.WeakMethodReference;
@@ -53,9 +54,12 @@ import com.poupa.vinylmusicplayer.misc.queue.StaticPlayingQueue;
 import com.poupa.vinylmusicplayer.model.Album;
 import com.poupa.vinylmusicplayer.model.Playlist;
 import com.poupa.vinylmusicplayer.model.Song;
+import com.poupa.vinylmusicplayer.onedrive.MultiStreamOgg;
+import com.poupa.vinylmusicplayer.onedrive.OneDrive;
 import com.poupa.vinylmusicplayer.provider.HistoryStore;
 import com.poupa.vinylmusicplayer.provider.MusicPlaybackQueueStore;
 import com.poupa.vinylmusicplayer.provider.SongPlayCountStore;
+import com.poupa.vinylmusicplayer.service.notification.BufferingNotification;
 import com.poupa.vinylmusicplayer.service.notification.CrashNotification;
 import com.poupa.vinylmusicplayer.service.notification.IdleNotification;
 import com.poupa.vinylmusicplayer.service.notification.PlayingNotification;
@@ -75,6 +79,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Random;
+import java.util.function.BooleanSupplier;
 
 /**
  * @author Karim Abou Zeid (kabouzeid), Andrew Neal
@@ -157,6 +162,8 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
 
     private boolean queuesRestored;
     private boolean pausedByTransientLossOfFocus;
+    /** A OneDrive song is loading before it can play (shown as buffering in the media session). */
+    private volatile boolean buffering;
 
     private PlayingNotification playingNotification;
     private IdleNotification idleNotification;
@@ -208,7 +215,12 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
     private BrowsableMusicProvider mBrowsableMusicProvider;
 
     private static String getTrackUri(@NonNull Song song) {
-        return MusicUtil.getSongFileUri(song.id).toString();
+        if (OneDrive.isOneDriveSong(song)) {
+            // The offline copy once saved, otherwise a stream from OneDrive
+            return OneDrive.playbackUri(song);
+        }
+        // An Ogg file with video in it plays through its audio stream (Android refuses it whole)
+        return MultiStreamOgg.trackUri(song, MusicUtil.getSongFileUri(song.id).toString());
     }
 
     @Override
@@ -348,7 +360,10 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
                         playNextSong(true);
                         break;
                     case TOGGLE_FAVORITE:
-                        MusicUtil.toggleFavorite(this, getCurrentSong());
+                        final Song favoriteCandidate = OneDrive.requireLocalSong(this, getCurrentSong());
+                        if (favoriteCandidate != null) {
+                            MusicUtil.toggleFavorite(this, favoriteCandidate);
+                        }
                         break;
                     case ACTION_STOP:
                     case ACTION_QUIT:
@@ -575,7 +590,15 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
     private boolean openCurrent() {
         synchronized (this) {
             try {
-                return (playback != null) && playback.setDataSource(getTrackUri(getCurrentSong()));
+                final Song song = getCurrentSong();
+                if (!OneDrive.canOpenNow(song)) {
+                    // A OneDrive song that is not buffered yet would block prepare() while this
+                    // lock is held. Leave it unopened (and stop the previous track, as opening
+                    // would); playing it goes through playSongAtImpl, which buffers first.
+                    if (playback != null) playback.stop();
+                    return false;
+                }
+                return (playback != null) && playback.setDataSource(getTrackUri(song));
             } catch (Exception e) {
                 OopsHandler.collectStackTrace(e);
                 return false;
@@ -599,7 +622,15 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
                 if (getRepeatMode() == REPEAT_MODE_NONE && playingQueue.isLastTrack()) {
                     playback.setNextDataSource(null);
                 } else {
-                    playback.setNextDataSource(getTrackUri(getSongAt(nextPosition)));
+                    final Song next = getSongAt(nextPosition);
+                    if (OneDrive.needsBuffering(next)) {
+                        // Download it ahead; once it can be prepared without waiting,
+                        // prepare it again for gapless playback
+                        playback.setNextDataSource(null);
+                        OneDrive.prefetch(next, this::prepareNext);
+                    } else {
+                        playback.setNextDataSource(getTrackUri(next));
+                    }
                 }
                 playingQueue.setNextPosition(nextPosition);
             } catch (Exception e) {
@@ -682,10 +713,11 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
     };
 
     void updateMediaSessionPlaybackState() {
+        final int state = buffering ? PlaybackStateCompat.STATE_BUFFERING
+                : isPlaying() ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
         PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
                 .setActions(MEDIA_SESSION_ACTIONS)
-                .setState(isPlaying() ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED,
-                        getSongProgressMillis(), 1);
+                .setState(state, buffering ? 0 : getSongProgressMillis(), 1);
 
         setCustomAction(stateBuilder);
 
@@ -994,6 +1026,39 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
     }
 
     void playSongAtImpl(int position) {
+        // Runs on the playback thread, without the service lock: buffer a OneDrive song here so
+        // that preparing it under the lock never waits on the network
+        final Song song = getSongAt(position);
+        if (OneDrive.needsBuffering(song)) {
+            // Switch to the chosen song right away: the previous one stops, and the chosen one's
+            // title and cover show (as "buffering" on the lock screen) while it loads
+            synchronized (this) {
+                if (playback != null) playback.stop();
+                playingQueue.setCurrentPosition(position);
+                buffering = true;
+            }
+            notifyChange(META_CHANGED);
+            notifyChange(PLAY_STATE_CHANGED);
+
+            SafeToast.show(this, R.string.onedrive_buffering);
+            final BufferingNotification progress = new BufferingNotification(this, song);
+            final BooleanSupplier anotherSongChosen = () ->
+                    playbackHandler.hasMessages(PLAY_SONG) || playbackHandler.hasMessages(SET_POSITION);
+            final boolean ready;
+            try {
+                ready = OneDrive.awaitReady(song, anotherSongChosen, progress::onProgress);
+            } finally {
+                progress.finish();
+                buffering = false;
+            }
+            if (!ready) {
+                if (!anotherSongChosen.getAsBoolean()) {
+                    SafeToast.show(this, OneDrive.failureMessage(this, song));
+                    notifyChange(PLAY_STATE_CHANGED); // no longer buffering
+                }
+                return;
+            }
+        }
         if (openTrackAndPrepareNextAt(position)) {
             play();
         } else {
@@ -1128,6 +1193,10 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
     }
 
     void notifyChange(@NonNull final String what) {
+        if (META_CHANGED.equals(what)) {
+            // Before anything redraws the cover: only the playing song may fetch random artwork
+            RandomArtwork.setPlayingSong(getCurrentSong());
+        }
         handleAndSendChangeInternal(what);
         sendPublicIntent(what);
     }
@@ -1160,6 +1229,9 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
     }
 
     private void sendChangeInternal(final String what) {
+        if (META_CHANGED.equals(what)) {
+            RandomArtwork.setPlayingSong(getCurrentSong()); // also on paths that skip notifyChange
+        }
         sendBroadcast(new Intent(what));
         appWidgetBig.notifyChange(this, what);
         appWidgetClassic.notifyChange(this, what);

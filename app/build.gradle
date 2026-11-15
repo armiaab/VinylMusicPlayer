@@ -32,6 +32,33 @@ licenses {
     }
 }
 
+// Client id of the Azure app registration used for OneDrive (see docs/ONEDRIVE.md).
+// Without it the OneDrive section stays hidden. First match wins:
+// -Pvinyl.onedriveClientId=..., env VINYL_ONEDRIVE_CLIENT_ID, local.properties vinyl.onedriveClientId
+final Properties localProps = new Properties()
+final File localPropsFile = rootProject.file('local.properties')
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+final String onedriveClientId = (project.findProperty('vinyl.onedriveClientId')
+        ?: System.getenv('VINYL_ONEDRIVE_CLIENT_ID')
+        ?: localProps.getProperty('vinyl.onedriveClientId')
+        ?: '').toString().trim()
+if (!onedriveClientId.isEmpty()
+        && !(onedriveClientId ==~ /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/)) {
+    throw new GradleException('vinyl.onedriveClientId must be the GUID of an Azure app registration')
+}
+// Unsplash API Access Key for random artwork (see docs/RANDOM_ARTWORK.md); without it the feature
+// is off. Same lookup order: -Pvinyl.unsplashAccessKey, env VINYL_UNSPLASH_ACCESS_KEY, local.properties.
+// Only the Access Key: the Secret Key is not needed and must never be built into the app.
+final String unsplashAccessKey = (project.findProperty('vinyl.unsplashAccessKey')
+        ?: System.getenv('VINYL_UNSPLASH_ACCESS_KEY')
+        ?: localProps.getProperty('vinyl.unsplashAccessKey')
+        ?: '').toString().trim()
+if (!unsplashAccessKey.isEmpty() && !(unsplashAccessKey ==~ /[A-Za-z0-9_-]{20,}/)) {
+    throw new GradleException('vinyl.unsplashAccessKey must be the Access Key of an Unsplash application')
+}
+
 android {
     compileSdk 34
     namespace 'com.poupa.vinylmusicplayer'
@@ -47,6 +74,13 @@ android {
         versionName '1.11.0'
 
         multiDexEnabled true
+
+        // OneDrive
+        buildConfigField 'String', 'ONEDRIVE_CLIENT_ID', "\"${onedriveClientId}\""
+        buildConfigField 'String', 'UNSPLASH_ACCESS_KEY', "\"${unsplashAccessKey}\""
+        // AppAuth requires a redirect scheme placeholder. OneDrive sign-in uses
+        // msauth://<applicationId>/<signature hash> instead (see AndroidManifest.xml), so this stays unused
+        manifestPlaceholders.put('appAuthRedirectScheme', 'com.poupa.vinylmusicplayer.appauth')
     }
     buildTypes {
         release {
@@ -179,6 +213,9 @@ dependencies {
     implementation 'io.noties.markwon:linkify:4.6.2'
 
     implementation 'me.zhanghai.android.materialprogressbar:library:1.6.1'
+
+    // OneDrive sign-in (OAuth 2.0 + PKCE in a Custom Tab). Graph calls use HttpURLConnection
+    implementation 'net.openid:appauth:0.11.1'
 
     implementation 'com.github.VinylMusicPlayer:jaudiotagger:v3.0.1o'
 

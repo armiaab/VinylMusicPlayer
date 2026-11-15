@@ -3,6 +3,7 @@ package com.poupa.vinylmusicplayer.service;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
+import android.media.MediaDataSource;
 import android.media.MediaPlayer;
 import android.media.audiofx.AudioEffect;
 import android.media.audiofx.DynamicsProcessing;
@@ -17,10 +18,17 @@ import androidx.annotation.RequiresApi;
 
 import com.poupa.vinylmusicplayer.App;
 import com.poupa.vinylmusicplayer.R;
+import com.poupa.vinylmusicplayer.onedrive.MultiStreamOgg;
+import com.poupa.vinylmusicplayer.onedrive.OneDrive;
 import com.poupa.vinylmusicplayer.service.playback.Playback;
 import com.poupa.vinylmusicplayer.util.OopsHandler;
 import com.poupa.vinylmusicplayer.util.PreferenceUtil;
 import com.poupa.vinylmusicplayer.util.SafeToast;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.util.IdentityHashMap;
+import java.util.Map;
 
 /**
  * @author Andrew Neal, Karim Abou Zeid (kabouzeid)
@@ -39,6 +47,9 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
     private Playback.PlaybackCallbacks callbacks;
 
     private boolean mIsInitialized = false;
+
+    /** OneDrive stream each player reads from; closed when that player is reset or released. */
+    private final Map<MediaPlayer, Closeable> streamSources = new IdentityHashMap<>();
 
     private float duckingFactor = 1;
     private float replaygain = Float.NaN;
@@ -80,8 +91,26 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
         }
         try {
             player.reset();
+            closeStreamSource(player);
             player.setOnPreparedListener(null);
-            if (path.startsWith("content://")) {
+            if (OneDrive.isStreamUri(path)) {
+                // A OneDrive song still downloading: the platform decoder reads the original
+                // bytes as they arrive (MusicService only gets here once the headers are in)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false;
+                final MediaDataSource source = OneDrive.openDataSource(path);
+                synchronized (streamSources) {
+                    streamSources.put(player, source);
+                }
+                player.setDataSource(source);
+            } else if (MultiStreamOgg.isLocalUri(path)) {
+                // An Ogg file with video in it: Android refuses it whole, so play its audio stream
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false;
+                final MediaDataSource source = MultiStreamOgg.openLocal(path);
+                synchronized (streamSources) {
+                    streamSources.put(player, source);
+                }
+                player.setDataSource(source);
+            } else if (path.startsWith("content://")) {
                 player.setDataSource(context, Uri.parse(path));
             } else {
                 player.setDataSource(path);
@@ -93,6 +122,7 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
             }
             player.prepare();
         } catch (Exception e) {
+            closeStreamSource(player);
             return false;
         }
         player.setOnCompletionListener(this);
@@ -125,7 +155,7 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
             return;
         }
         if (mNextMediaPlayer != null) {
-            mNextMediaPlayer.release();
+            releasePlayer(mNextMediaPlayer);
             mNextMediaPlayer = null;
         }
         if (path == null) {
@@ -141,13 +171,13 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
                 } catch (@NonNull IllegalArgumentException | IllegalStateException e) {
                     Log.e(TAG, "setNextDataSource: setNextMediaPlayer()", e);
                     if (mNextMediaPlayer != null) {
-                        mNextMediaPlayer.release();
+                        releasePlayer(mNextMediaPlayer);
                         mNextMediaPlayer = null;
                     }
                 }
             } else {
                 if (mNextMediaPlayer != null) {
-                    mNextMediaPlayer.release();
+                    releasePlayer(mNextMediaPlayer);
                     mNextMediaPlayer = null;
                 }
             }
@@ -190,6 +220,7 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
     @Override
     public void stop() {
         mCurrentMediaPlayer.reset();
+        closeStreamSource(mCurrentMediaPlayer);
         mIsInitialized = false;
     }
 
@@ -199,9 +230,9 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
     @Override
     public void release() {
         stop();
-        mCurrentMediaPlayer.release();
+        releasePlayer(mCurrentMediaPlayer);
         if (mNextMediaPlayer != null) {
-            mNextMediaPlayer.release();
+            releasePlayer(mNextMediaPlayer);
         }
         if (mDynamicsProcessing != null) {
             mDynamicsProcessing.release();
@@ -383,6 +414,26 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
         setVolume(volume);
     }
 
+    private void releasePlayer(@NonNull final MediaPlayer player) {
+        player.release();
+        closeStreamSource(player);
+    }
+
+    /** Lets go of the OneDrive stream a player read from, if any. */
+    private void closeStreamSource(@NonNull final MediaPlayer player) {
+        final Closeable source;
+        synchronized (streamSources) {
+            source = streamSources.remove(player);
+        }
+        if (source != null) {
+            try {
+                source.close();
+            } catch (IOException ignored) {
+                // nothing to recover
+            }
+        }
+    }
+
     @Override
     public boolean onError(final MediaPlayer mp, final int what, final int extra) {
         if (mp == mCurrentMediaPlayer) {
@@ -390,7 +441,7 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
                 SafeToast.show(context, context.getResources().getString(R.string.unplayable_file));
             }
             mIsInitialized = false;
-            mCurrentMediaPlayer.release();
+            releasePlayer(mCurrentMediaPlayer);
             if (mNextMediaPlayer != null) {
                 mCurrentMediaPlayer = mNextMediaPlayer;
                 mIsInitialized = true;
@@ -404,7 +455,7 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
             }
         } else {
             mIsInitialized = false;
-            mCurrentMediaPlayer.release();
+            releasePlayer(mCurrentMediaPlayer);
             mCurrentMediaPlayer = new MediaPlayer();
             mCurrentMediaPlayer.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK);
             if (context != null) {
@@ -418,7 +469,7 @@ public class MultiPlayer implements Playback, MediaPlayer.OnErrorListener, Media
     public void onCompletion(final MediaPlayer mp) {
         if (mp == mCurrentMediaPlayer && mNextMediaPlayer != null) {
             mIsInitialized = false;
-            mCurrentMediaPlayer.release();
+            releasePlayer(mCurrentMediaPlayer);
             mCurrentMediaPlayer = mNextMediaPlayer;
             mIsInitialized = true;
             mNextMediaPlayer = null;

@@ -40,6 +40,7 @@ import com.poupa.vinylmusicplayer.helper.MusicPlayerRemote;
 import com.poupa.vinylmusicplayer.interfaces.PaletteColorHolder;
 import com.poupa.vinylmusicplayer.model.Song;
 import com.poupa.vinylmusicplayer.model.lyrics.Lyrics;
+import com.poupa.vinylmusicplayer.onedrive.OneDrive;
 import com.poupa.vinylmusicplayer.ui.activities.base.AbsThemeActivity;
 import com.poupa.vinylmusicplayer.ui.activities.tageditor.AbsTagEditorActivity;
 import com.poupa.vinylmusicplayer.ui.activities.tageditor.SongTagEditorActivity;
@@ -48,6 +49,8 @@ import com.poupa.vinylmusicplayer.util.ImageUtil;
 import com.poupa.vinylmusicplayer.util.MusicUtil;
 import com.poupa.vinylmusicplayer.util.NavigationUtil;
 import com.sothree.slidinguppanel.SlidingUpPanelLayout;
+
+import java.util.List;
 
 public abstract class AbsPlayerFragment
         extends AbsMusicServiceFragment
@@ -125,8 +128,29 @@ public abstract class AbsPlayerFragment
 
     @Override
     public boolean onMenuItemClick(MenuItem item) {
-        final @NonNull Song song = MusicPlayerRemote.getCurrentSong();
+        final @NonNull Song currentSong = MusicPlayerRemote.getCurrentSong();
         int itemId = item.getItemId();
+        if (itemId == R.id.action_save_playing_queue) {
+            // Playlists keep MediaStore songs: OneDrive songs take part once saved offline
+            final List<Song> queue = OneDrive.requireLocalSongs(requireActivity(), MusicPlayerRemote.getPlayingQueue());
+            CreatePlaylistDialog.create(queue).show(requireActivity().getSupportFragmentManager(), "ADD_TO_PLAYLIST");
+            return true;
+        }
+        final boolean needsLocalFile = itemId == R.id.action_toggle_favorite
+                || itemId == R.id.action_share
+                || itemId == R.id.action_add_to_playlist
+                || itemId == R.id.action_tag_editor
+                || itemId == R.id.action_details
+                || itemId == R.id.action_go_to_album
+                || itemId == R.id.action_go_to_artist;
+        final Song song;
+        if (needsLocalFile) {
+            // For a OneDrive song: its offline copy in the library, once saved
+            song = OneDrive.requireLocalSong(requireActivity(), currentSong);
+            if (song == null) return true;
+        } else {
+            song = currentSong;
+        }
         if (itemId == R.id.action_sleep_timer) {
             new SleepTimerDialog().show(getParentFragmentManager(), "SET_SLEEP_TIMER");
             return true;
@@ -144,9 +168,6 @@ public abstract class AbsPlayerFragment
             return true;
         } else if (itemId == R.id.action_clear_playing_queue) {
             MusicPlayerRemote.clearQueue();
-            return true;
-        } else if (itemId == R.id.action_save_playing_queue) {
-            CreatePlaylistDialog.create(MusicPlayerRemote.getPlayingQueue()).show(requireActivity().getSupportFragmentManager(), "ADD_TO_PLAYLIST");
             return true;
         } else if (itemId == R.id.action_tag_editor) {
             Intent intent = new Intent(requireActivity(), SongTagEditorActivity.class);

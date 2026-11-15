@@ -40,12 +40,14 @@ import com.poupa.vinylmusicplayer.interfaces.PaletteColorHolder;
 import com.poupa.vinylmusicplayer.loader.AlbumLoader;
 import com.poupa.vinylmusicplayer.loader.ArtistLoader;
 import com.poupa.vinylmusicplayer.model.Song;
+import com.poupa.vinylmusicplayer.onedrive.OneDrive;
 import com.poupa.vinylmusicplayer.provider.StaticPlaylist;
 import com.poupa.vinylmusicplayer.service.MusicService;
 import com.poupa.vinylmusicplayer.ui.activities.base.AbsSlidingMusicPanelActivity;
 import com.poupa.vinylmusicplayer.ui.activities.intro.AppIntroActivity;
 import com.poupa.vinylmusicplayer.ui.fragments.mainactivity.folders.FoldersFragment;
 import com.poupa.vinylmusicplayer.ui.fragments.mainactivity.library.LibraryFragment;
+import com.poupa.vinylmusicplayer.ui.fragments.mainactivity.onedrive.OneDriveFragment;
 import com.poupa.vinylmusicplayer.util.MusicUtil;
 import com.poupa.vinylmusicplayer.util.PreferenceUtil;
 import com.sothree.slidinguppanel.SlidingUpPanelLayout;
@@ -60,6 +62,7 @@ public class MainActivity extends AbsSlidingMusicPanelActivity implements Palett
     private static final int LIBRARY = 0;
     private static final int FOLDERS = 1;
     private static final int SD_FOLDERS = 2;
+    private static final int ONEDRIVE = 3;
 
     NavigationView navigationView;
     DrawerLayout drawerLayout;
@@ -97,6 +100,15 @@ public class MainActivity extends AbsSlidingMusicPanelActivity implements Palett
     private void setMusicChooser(int key) {
         PreferenceUtil.getInstance().setLastMusicChooser(key);
         switch (key) {
+            case ONEDRIVE:
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && OneDrive.isAvailable()) {
+                    navigationView.setCheckedItem(R.id.nav_onedrive);
+                    setCurrentFragment(OneDriveFragment.newInstance());
+                    break;
+                }
+                // Not in this build or on this device: fall back to the library
+                PreferenceUtil.getInstance().setLastMusicChooser(LIBRARY);
+                // fall-through
             case LIBRARY:
                 navigationView.setCheckedItem(R.id.nav_library);
                 setCurrentFragment(LibraryFragment.newInstance());
@@ -167,6 +179,7 @@ public class MainActivity extends AbsSlidingMusicPanelActivity implements Palett
         if(FoldersFragment.getSDCardDirectory(this) != null){
             navigationView.getMenu().findItem(R.id.nav_sd_folders).setVisible(true);
         }
+        navigationView.getMenu().findItem(R.id.nav_onedrive).setVisible(OneDrive.isAvailable());
 
         navigationView.setNavigationItemSelectedListener(menuItem -> {
             drawerLayout.closeDrawers();
@@ -177,6 +190,8 @@ public class MainActivity extends AbsSlidingMusicPanelActivity implements Palett
                 new Handler().postDelayed(() -> setMusicChooser(FOLDERS), 200);
             } else if (itemId == R.id.nav_sd_folders) {
                 new Handler().postDelayed(() -> setMusicChooser(SD_FOLDERS), 200);
+            } else if (itemId == R.id.nav_onedrive) {
+                new Handler().postDelayed(() -> setMusicChooser(ONEDRIVE), 200);
             } else if (itemId == R.id.action_reset_discography) {
                 new MaterialDialog.Builder(this)
                         .title(R.string.reset_discography)
