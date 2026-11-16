@@ -40,6 +40,7 @@ import com.poupa.vinylmusicplayer.onedrive.OneDriveClient;
 import com.poupa.vinylmusicplayer.onedrive.OneDriveException;
 import com.poupa.vinylmusicplayer.ui.activities.MainActivity;
 import com.poupa.vinylmusicplayer.ui.fragments.mainactivity.AbsMainActivityFragment;
+import com.poupa.vinylmusicplayer.util.OopsHandler;
 import com.poupa.vinylmusicplayer.util.PreferenceUtil;
 import com.poupa.vinylmusicplayer.util.SafeToast;
 import com.poupa.vinylmusicplayer.util.ViewUtil;
@@ -79,6 +80,8 @@ public class OneDriveFragment extends AbsMainActivityFragment implements
     private static final ExecutorService IO = Executors.newSingleThreadExecutor(r -> {
         final Thread t = new Thread(r, "OneDriveBrowser");
         t.setDaemon(true);
+        // An unexpected error in a background task is recorded, never allowed to close the app
+        t.setUncaughtExceptionHandler((thread, error) -> OopsHandler.collectStackTrace(error));
         return t;
     });
 

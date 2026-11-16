@@ -115,6 +115,13 @@ final class OneDriveStream {
         }
     }
 
+    /** The whole file is downloaded (and still in the cache). */
+    boolean isComplete() {
+        synchronized (lock) {
+            return complete && !destroyed;
+        }
+    }
+
     /** Failed or released for good: a new stream has to be started to play the song again. */
     boolean isDead() {
         synchronized (lock) {
@@ -305,7 +312,8 @@ final class OneDriveStream {
                 fireReadyIfNeededLocked();
             }
             saveOffline();
-        } catch (OneDriveException | IOException e) {
+        } catch (OneDriveException | IOException | RuntimeException e) {
+            // RuntimeException too: anything unexpected fails this song, never the whole app
             synchronized (lock) {
                 if (!destroyed) {
                     failed = true;
@@ -544,9 +552,14 @@ final class OneDriveStream {
     }
 
     private void saveOffline() {
-        final OfflineSaver.Saved saved = OfflineSaver.save(context, fileName, folderPath, file);
-        if (saved != null) {
-            library.setOffline(songId, saved.path, saved.uri);
+        try {
+            final OfflineSaver.Saved saved = OfflineSaver.save(context, fileName, folderPath, file);
+            if (saved != null) {
+                library.setOffline(songId, saved.path, saved.uri);
+            }
+        } catch (RuntimeException e) {
+            // The song played fine: only the offline copy is missing; it is tried on a later play
+            Log.w(TAG, "Saving " + fileName + " for offline use failed", e);
         }
     }
 }

@@ -534,6 +534,7 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
     }
 
     private void releaseResources() {
+        artworkExecutor.shutdownNow();
         queueSaveHandler.removeCallbacksAndMessages(null);
         queueSaveHandlerThread.quitSafely();
 
@@ -780,15 +781,60 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
         // Note: For Android Auto and for Android 13, it is necessary to provide METADATA_KEY_ALBUM_ART
         //       or similar to the MediaSession to have a hi-res cover image displayed,
         //       respectively on the Auto's now playing screen and Android 13's now playing notification/lockscreen
-        final SongCoverFetcher fetcher = new SongCoverFetcher(new SongCover(song));
-        final InputStream data = fetcher.loadData();
-        if (data != null) {
-            final Bitmap bitmap = BitmapFactory.decodeStream(data);
-            metaData.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap);
+        // The cover is read from the file (or fetched), which can be slow: never on the calling
+        // thread, often the main one (a slow cover read here froze the app). The text goes out now,
+        // the cover follows; the same song's cover is reused (queue changes come here too).
+        final Bitmap knownCover = (artworkSongId == song.id) ? artworkBitmap : null;
+        if (knownCover != null) {
+            metaData.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, knownCover);
         }
+        final MediaMetadataCompat metadata = metaData.build();
+        mediaSession.setMetadata(metadata);
+        if (knownCover != null) return;
 
-        mediaSession.setMetadata(metaData.build());
+        artworkSongId = song.id;
+        artworkBitmap = null;
+        if (artworkExecutor.isShutdown()) return; // service released
+        artworkExecutor.execute(() -> {
+            Bitmap bitmap = null;
+            final SongCoverFetcher fetcher = new SongCoverFetcher(new SongCover(song));
+            try {
+                final InputStream data = fetcher.loadData();
+                if (data != null) bitmap = BitmapFactory.decodeStream(data);
+            } catch (RuntimeException | OutOfMemoryError e) {
+                OopsHandler.collectStackTrace(e);
+            } finally {
+                fetcher.cleanup();
+            }
+            if (bitmap == null) return;
+            final Bitmap cover = bitmap;
+            final MediaMetadataCompat withCover = new MediaMetadataCompat.Builder(metadata)
+                    .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, cover)
+                    .build();
+            uiThreadHandler.post(() -> {
+                if (artworkSongId != song.id || artworkExecutor.isShutdown()) return; // another song, or released
+                artworkBitmap = cover;
+                try {
+                    mediaSession.setMetadata(withCover);
+                } catch (RuntimeException e) {
+                    OopsHandler.collectStackTrace(e);
+                }
+            });
+        });
    }
+
+    /** Loads media session covers off the calling thread (see updateMediaSessionMetaData). */
+    private final java.util.concurrent.ExecutorService artworkExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+                final Thread thread = new Thread(runnable, "MediaSessionArtwork");
+                thread.setDaemon(true);
+                thread.setUncaughtExceptionHandler((t, error) -> OopsHandler.collectStackTrace(error));
+                return thread;
+            });
+    /** Song whose cover the media session shows (or is loading), and that cover. */
+    private volatile long artworkSongId = Song.EMPTY_SONG.id;
+    @Nullable
+    private volatile Bitmap artworkBitmap;
 
     public void runOnUiThread(Runnable runnable) {
         uiThreadHandler.post(runnable);

@@ -7,6 +7,7 @@ import com.poupa.vinylmusicplayer.model.Album;
 import com.poupa.vinylmusicplayer.model.Artist;
 import com.poupa.vinylmusicplayer.model.Genre;
 import com.poupa.vinylmusicplayer.model.Song;
+import com.poupa.vinylmusicplayer.onedrive.OneDriveLibrary;
 import com.poupa.vinylmusicplayer.sort.AlbumSortOrder;
 import com.poupa.vinylmusicplayer.sort.SongSortOrder;
 
@@ -73,7 +74,12 @@ class MemCache {
         }
 
         songsById.put(song.id, song);
-        songsByPath.put(song.data, song);
+        // A OneDrive song may share its path with its offline copy (a local song): the local
+        // song keeps the path, so path lookups (folders, deletion, offline copy matching) find it
+        final Song samePath = songsByPath.get(song.data);
+        if (samePath == null || !OneDriveLibrary.isOneDriveId(song.id) || OneDriveLibrary.isOneDriveId(samePath.id)) {
+            songsByPath.put(song.data, song);
+        }
 
         // Only sort albums after the song has been added
         for (Long artistId : albums.keySet()) {

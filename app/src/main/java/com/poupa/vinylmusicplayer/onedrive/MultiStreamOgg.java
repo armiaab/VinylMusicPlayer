@@ -47,8 +47,14 @@ public final class MultiStreamOgg {
      */
     @NonNull
     public static String trackUri(@NonNull Song song, @NonNull String defaultUri) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || !isOggName(song.data)) return defaultUri;
-        final File file = new File(song.data);
+        return trackUri(song.data, defaultUri);
+    }
+
+    /** {@link #trackUri(Song, String)} for a file path (e.g. a OneDrive song's local copy). */
+    @NonNull
+    public static String trackUri(@NonNull String path, @NonNull String defaultUri) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || !isOggName(path)) return defaultUri;
+        final File file = new File(path);
         final String key = key(file);
         Boolean multiplexed = MULTIPLEXED.get(key);
         if (multiplexed == null) {
@@ -64,7 +70,7 @@ public final class MultiStreamOgg {
             }
             MULTIPLEXED.put(key, multiplexed);
         }
-        return multiplexed ? LOCAL_SCHEME + song.data : defaultUri;
+        return multiplexed ? LOCAL_SCHEME + path : defaultUri;
     }
 
     public static boolean isLocalUri(@NonNull String uri) {

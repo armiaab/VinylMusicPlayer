@@ -56,6 +56,15 @@ public final class OneDrive {
     /** Scans queued or running; automatic scans are skipped while one is on its way. */
     private static final AtomicInteger PENDING_SCANS = new AtomicInteger();
 
+    /** Library updates (cheap, in memory) have their own thread, never queued behind a scan. */
+    private static final ExecutorService PUBLISH = Executors.newSingleThreadExecutor(runnable -> {
+        final Thread thread = new Thread(runnable, "OneDriveLibraryPublish");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final java.util.concurrent.atomic.AtomicBoolean PUBLISH_PENDING =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
     @Nullable
     private static OneDriveLibrary library;
     @Nullable
@@ -86,10 +95,11 @@ public final class OneDrive {
         if (!OneDriveAuth.isSignedIn(app)) return;
         if (!full && !announce && PENDING_SCANS.get() > 0) return; // one is already on its way
         PENDING_SCANS.incrementAndGet();
-        LIBRARY_SYNC.execute(() -> {
+        libraryTask(() -> {
             try {
                 if (announce) SafeToast.show(app, R.string.onedrive_scanning);
                 final OneDriveLibrary.ScanResult result = scanner().scan(full);
+                library().trashCopiesOfRemovedFiles();
                 publishNow();
                 if (announce || result.added > 0 || result.removed > 0) {
                     SafeToast.show(app, app.getString(R.string.onedrive_scan_done, result.total, result.added, result.removed));
@@ -105,18 +115,43 @@ public final class OneDrive {
         });
     }
 
-    /** Puts the OneDrive songs of the last scan into the library, in the background. */
+    /**
+     * Puts the OneDrive songs of the last scan into the library, in the background. Runs on its
+     * own thread, not behind scans and duration reads, so a song saved offline is swapped for its
+     * local copy right after MediaStore indexed it (no duplicate in between). Bursts coalesce.
+     */
     public static void publishToLibrary() {
         if (!isAvailable()) return;
-        LIBRARY_SYNC.execute(OneDrive::publishNow);
+        if (PUBLISH_PENDING.compareAndSet(false, true)) {
+            PUBLISH.execute(() -> {
+                PUBLISH_PENDING.set(false);
+                publishNow();
+            });
+        }
     }
 
+    private static final Object PUBLISH_LOCK = new Object();
+
     private static void publishNow() {
-        try {
-            Discography.getInstance().replaceOneDriveSongs(library().librarySongs());
-        } catch (RuntimeException e) {
-            OopsHandler.collectStackTrace(e);
+        // One at a time: an older snapshot must never overwrite a newer one
+        synchronized (PUBLISH_LOCK) {
+            try {
+                Discography.getInstance().replaceOneDriveSongs(library().librarySongs());
+            } catch (RuntimeException e) {
+                OopsHandler.collectStackTrace(e);
+            }
         }
+    }
+
+    /** Runs a library task; an unexpected error is recorded, never allowed to crash the app. */
+    private static void libraryTask(@NonNull Runnable task) {
+        LIBRARY_SYNC.execute(() -> {
+            try {
+                task.run();
+            } catch (RuntimeException e) {
+                OopsHandler.collectStackTrace(e);
+            }
+        });
     }
 
     /**
@@ -131,11 +166,14 @@ public final class OneDrive {
         if (reset) {
             scanLibrary(app, true, true);
         } else if (OneDriveAuth.isSignedIn(app) && PENDING_SCANS.get() == 0) {
-            LIBRARY_SYNC.execute(() -> {
+            libraryTask(() -> {
                 if (scanner().isStale(AUTO_SCAN_INTERVAL_MS)) {
                     scanLibrary(app, false, false);
                 } else {
-                    probeDurations(); // left over from an interrupted pass
+                    // The last scan still holds: finish what it left (an interrupted pass, or
+                    // leftovers marked before this version)
+                    if (scanner().hasScanned() && library().trashCopiesOfRemovedFiles() > 0) publishNow();
+                    probeDurations();
                 }
             });
         }
@@ -208,7 +246,7 @@ public final class OneDrive {
     public static void onSignedOut(@NonNull Context context) {
         if (!isAvailable()) return;
         final Context app = context.getApplicationContext();
-        LIBRARY_SYNC.execute(() -> {
+        libraryTask(() -> {
             OneDriveAuth.signOut(app);
             scanner().forget();
             library().clearLibrary();
@@ -238,6 +276,18 @@ public final class OneDrive {
         return OneDriveLibrary.isOneDriveId(song.id);
     }
 
+    /**
+     * Whether the song's file may be read (tags, cover, lyrics): always for local songs and
+     * offline copies; for a OneDrive song still downloading, only once its download is complete.
+     * Cheap: no file system or network access.
+     */
+    public static boolean isFileComplete(@NonNull Song song) {
+        if (!isOneDriveSong(song)) return true;
+        final String cacheDir = library().cacheDir().getPath() + java.io.File.separator;
+        if (!song.data.startsWith(cacheDir)) return true; // its offline copy
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && streams().isComplete(song.id);
+    }
+
     // --- discography -----------------------------------------------------------------------
 
     /** The song of a OneDrive id kept in a queue, history or play count, or null when unknown. */
@@ -255,7 +305,12 @@ public final class OneDrive {
      */
     @NonNull
     public static String playbackUri(@NonNull Song song) {
-        return library().playbackUri(song);
+        final String uri = library().playbackUri(song);
+        if (isStreamUri(uri)) return uri;
+        // A local file: an identical original found on the device may be an Ogg recording
+        // with video in it, which plays through its audio stream
+        final String path = library().offlinePath(song.id);
+        return path != null ? MultiStreamOgg.trackUri(path, uri) : uri;
     }
 
     public static boolean isStreamUri(@Nullable String uri) {

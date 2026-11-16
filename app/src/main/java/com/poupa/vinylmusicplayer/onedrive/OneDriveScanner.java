@@ -57,6 +57,11 @@ final class OneDriveScanner {
         return System.currentTimeMillis() - prefs().getLong(KEY_LAST_SCAN, 0) > maxAgeMs;
     }
 
+    /** Whether a scan of the signed-in account completed (and was not forgotten since). */
+    boolean hasScanned() {
+        return prefs().getString(KEY_DELTA_LINK, null) != null;
+    }
+
     /** Forgets the scan position (signed out, or another account). */
     void forget() {
         prefs().edit().clear().apply();

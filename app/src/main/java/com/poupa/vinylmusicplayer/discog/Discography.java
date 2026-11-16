@@ -3,6 +3,7 @@ package com.poupa.vinylmusicplayer.discog;
 import android.content.Context;
 import android.os.Build;
 import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 
 import androidx.annotation.NonNull;
@@ -44,6 +45,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -557,9 +559,26 @@ public class Discography implements MusicServiceEventListener {
         changedListeners.remove(listener);
     }
 
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AtomicBoolean changeNotificationPending = new AtomicBoolean();
+
     private void notifyDiscographyChanged() {
+        // Called from background threads too (MediaStore sync, OneDrive library updates), while
+        // the main thread attaches and detaches activities and listeners: walking those
+        // collections off the main thread can throw ConcurrentModificationException and crash.
+        // So hop to the main thread, where they are changed, coalescing bursts into one hop.
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            notifyDiscographyChangedOnMainThread();
+        } else if (changeNotificationPending.compareAndSet(false, true)) {
+            mainHandler.post(() -> {
+                changeNotificationPending.set(false);
+                notifyDiscographyChangedOnMainThread();
+            });
+        }
+    }
+
+    private void notifyDiscographyChangedOnMainThread() {
         // Notify the attached activiies to reload the UI content
-        // Since this can be called from a background thread, make it safe by wrapping as an event to main thread
         attachedActivitiesAndQueue.forEach((activity, handler) -> {
             // Post as much 1 event per a coalescence period
             final long COALESCENCE_DELAY = 200L;

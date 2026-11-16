@@ -21,6 +21,7 @@ import androidx.documentfile.provider.DocumentFile;
 
 import com.poupa.vinylmusicplayer.R;
 import com.poupa.vinylmusicplayer.model.Song;
+import com.poupa.vinylmusicplayer.onedrive.OneDrive;
 
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
@@ -145,6 +146,10 @@ SAFUtil {
         // For file access, MediaStore offers In/OutputStream, whereas JAudioTagger requires File/RandomAccessFile API.
         // We first try accessing the File directly, since this is faster. Otherwise, we create a temp file with the InputStream contents.
         if (song.id == Song.EMPTY_SONG.id) {return null;}
+        // A OneDrive song still downloading: its file is mostly not there yet. Reading tags from
+        // it can take minutes (jaudiotagger scans an Ogg file backwards for its last page,
+        // through all the missing data) and froze the app when done for the cover.
+        if (!OneDrive.isFileComplete(song)) {return null;}
 
         final File songFile = new File(song.data);
         try {
@@ -159,6 +164,7 @@ SAFUtil {
     @Nullable
     public static AutoCloseAudioFile loadReadWriteableAudioFile(Context context, @NonNull final Song song) {
         // Use a temp file owned by Vinyl - this ensures we can write in it
+        if (!OneDrive.isFileComplete(song)) {return null;} // still downloading: see loadReadOnlyAudioFile
 
         final Uri uri = getUriFromSong(song);
         AutoDeleteTempFile tempFile = null;

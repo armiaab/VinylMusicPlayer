@@ -34,6 +34,9 @@ final class OneDriveStreams {
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(r -> {
         final Thread t = new Thread(r, "OneDriveStreams");
         t.setDaemon(true);
+        // Ready callbacks run here: an unexpected error is recorded, never allowed to close the app
+        t.setUncaughtExceptionHandler((thread, error) ->
+                com.poupa.vinylmusicplayer.util.OopsHandler.collectStackTrace(error));
         return t;
     });
 
@@ -82,6 +85,12 @@ final class OneDriveStreams {
     synchronized boolean isReady(long songId) {
         final OneDriveStream stream = streams.get(songId);
         return stream != null && stream.isReady();
+    }
+
+    /** Whether the song's download is complete (its cache file may be read). */
+    synchronized boolean isComplete(long songId) {
+        final OneDriveStream stream = streams.get(songId);
+        return stream != null && stream.isComplete();
     }
 
     /** Why the last stream of the song failed, if it did. */
