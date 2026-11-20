@@ -146,13 +146,33 @@ public final class OneDriveLibrary {
     }
 
     /**
+     * Files of the device that a listed OneDrive song stands for (see {@link #librarySongs}):
+     * the library shows the OneDrive song in their place. Updated by each {@link #librarySongs}.
+     */
+    @NonNull
+    private volatile Set<String> shadowedPaths = java.util.Collections.emptySet();
+
+    @NonNull
+    Set<String> shadowedPaths() {
+        return shadowedPaths;
+    }
+
+    /**
      * The OneDrive songs to show in the library: those found by the last scan, except the ones
-     * whose offline copy is already in the library (that copy is shown instead).
+     * whose offline copy (saved by Vinyl in Music/OneDrive) is already in the library: that copy
+     * is shown instead. A file that is identical to one already on the device elsewhere (a
+     * recording backed up to OneDrive...) is shown as the OneDrive song, in its OneDrive folder,
+     * and plays from the device file; that device file is left out of the library
+     * ({@link #shadowedPaths}), so it is not listed twice.
      */
     @NonNull
     List<Song> librarySongs() {
         final List<Song> candidates = new ArrayList<>();
+        final Set<Long> onDevice = new HashSet<>();
+        final Set<String> shadowed = new HashSet<>();
         final Map<Long, String> expectedCopies = new HashMap<>();
+        final Set<String> claimedCopies = new HashSet<>();
+        final Map<Long, Long> versionTimes = new HashMap<>();
         final Map<String, DeviceFile[]> deviceFiles = deviceIndex();
         synchronized (this) {
             ensureLoaded();
@@ -164,21 +184,48 @@ public final class OneDriveLibrary {
                 } else {
                     dropRedundantOwnCopy(e, deviceFiles);
                 }
+                // Only real file paths: an offline copy saved where MediaStore gave no file path
+                // is recorded by its content:// uri, which no File check can find
+                if (e.localPath != null && e.localPath.startsWith(File.separator) && !isOwnCopy(e.localPath)) {
+                    if (new File(e.localPath).isFile()) {
+                        onDevice.add(e.songId);
+                        shadowed.add(e.localPath);
+                    } else {
+                        clearOffline(e); // the device file was deleted: stream it again
+                    }
+                }
                 candidates.add(toSong(e));
-                if (e.localPath == null && e.localUri == null) expectedCopies.put(e.songId, expectedCopyPath(e));
+                if (e.localPath == null && e.localUri == null) {
+                    expectedCopies.put(e.songId, expectedCopyPath(e));
+                    versionTimes.put(e.songId, e.modifiedMillis);
+                }
+            }
+            // Copies that belong to some file, e.g. one deleted from the drive whose copy is
+            // about to be trashed: never another file's copy
+            for (final Entry e : bySongId.values()) {
+                if (e.localPath != null) claimedCopies.add(e.localPath);
             }
         }
         // Discography lookups outside this lock: Discography calls back into this class
         final Discography discography = Discography.getInstance();
         final List<Song> songs = new ArrayList<>(candidates.size());
+        shadowedPaths = java.util.Collections.unmodifiableSet(shadowed);
         for (final Song song : candidates) {
+            if (onDevice.contains(song.id)) {
+                songs.add(song); // listed in its OneDrive folder, plays from the device file
+                continue;
+            }
             if (librarySong(song.id) != null) continue; // its offline copy is listed instead
             final String expected = expectedCopies.get(song.id);
             if (expected != null) {
                 // A copy saved earlier but never recorded (the app stopped in between, or its
-                // data was cleared): adopt it rather than listing the song twice
+                // data was cleared): adopt it rather than listing the song twice. Only when it is
+                // this very file: a new file of the same name (a deleted file uploaded again, a
+                // new version) must not be hidden behind the old file's copy, which is trashed.
+                // (Android renames a trashed file, so it no longer exists at its path.)
                 final Song copy = discography.getSongByPath(expected);
-                if (!copy.equals(Song.EMPTY_SONG)) {
+                if (!copy.equals(Song.EMPTY_SONG) && !claimedCopies.contains(expected)
+                        && isCopyOfVersion(new File(expected), versionTimes.get(song.id))) {
                     setOffline(song.id, copy.data, ContentUris.withAppendedId(
                             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, copy.id).toString());
                     continue;
@@ -205,7 +252,7 @@ public final class OneDriveLibrary {
             ensureLoaded();
             for (final Entry e : bySongId.values()) {
                 if (e.driveState == DRIVE_GONE && !e.inLibrary && e.localUri != null && e.localPath != null
-                        && e.localPath.contains(OWN_COPIES)) {
+                        && isOwnCopy(e.localPath)) {
                     leftovers.add(e);
                 }
             }
@@ -230,13 +277,19 @@ public final class OneDriveLibrary {
     @RequiresApi(Build.VERSION_CODES.R)
     @Nullable
     private Boolean trashOwnCopy(@NonNull Entry e) {
+        return e.localUri == null || e.localPath == null ? Boolean.FALSE : trashOwnCopy(e.localPath, e.localUri);
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    @Nullable
+    private Boolean trashOwnCopy(@NonNull String localPath, @NonNull String localUri) {
         final ContentResolver resolver = context.getContentResolver();
-        final Uri uri = Uri.parse(e.localUri);
+        final Uri uri = Uri.parse(localUri);
         try (Cursor c = resolver.query(uri,
                 new String[]{MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.OWNER_PACKAGE_NAME}, null, null, null)) {
             if (c == null) return null;
             if (!c.moveToFirst()) return false; // already deleted
-            if (!TextUtils.equals(c.getString(0), e.localPath)
+            if (!TextUtils.equals(c.getString(0), localPath)
                     || !TextUtils.equals(c.getString(1), context.getPackageName())) {
                 return false; // not the copy Vinyl made
             }
@@ -248,9 +301,77 @@ public final class OneDriveLibrary {
         try {
             return resolver.update(uri, v, null, null) > 0 ? Boolean.TRUE : null;
         } catch (RuntimeException ex) {
-            Log.w(TAG, "Could not move the leftover copy " + e.localPath + " to the trash", ex);
+            Log.w(TAG, "Could not move the old copy " + localPath + " to the trash", ex);
             return null;
         }
+    }
+
+    // --- files changed on the drive ---------------------------------------------------------
+
+    /** Own copies of an older version of a file, to discard once the database is written. */
+    private final List<String[]> staleOwnCopies = new ArrayList<>();
+
+    /**
+     * The file's content changed on the drive (a new version uploaded over it): its offline copy
+     * holds the old version, and kept playing in its place. Forgets that copy, so the new version
+     * is listed and streams (and is saved again); Vinyl's own copy of the old version is then
+     * discarded by {@link #discardStaleCopies}. A file Vinyl did not make (an identical original
+     * found on the device) is only no longer used, never touched.
+     */
+    private void forgetOutdatedCopy(@NonNull Entry e, @NonNull DriveItem item, @NonNull ContentValues v) {
+        if (e.localPath == null && e.localUri == null) return;
+        if (e.cTag == null || item.cTag == null || e.cTag.equals(item.cTag)) return; // same content
+        if (isOwnCopy(e.localPath)) {
+            staleOwnCopies.add(new String[]{e.localPath, e.localUri});
+        }
+        e.localPath = null;
+        e.localUri = null;
+        v.putNull(Db.LOCAL_PATH);
+        v.putNull(Db.LOCAL_URI);
+        ownCopiesChecked.remove(e.itemId);
+        deviceCopyMissedAt.remove(e.itemId);
+    }
+
+    /**
+     * Moves own copies of replaced versions to the device trash (restorable for 30 days; deleted
+     * before Android 11), so the new version's copy can take their place. Call after the database
+     * transaction that found them.
+     */
+    private void discardStaleCopies() {
+        if (staleOwnCopies.isEmpty()) return;
+        final List<String[]> copies = new ArrayList<>(staleOwnCopies);
+        staleOwnCopies.clear();
+        for (final String[] copy : copies) {
+            final String path = copy[0];
+            final String uri = copy[1];
+            try {
+                if (uri == null) {
+                    //noinspection ResultOfMethodCallIgnored
+                    new File(path).delete();
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    trashOwnCopy(path, uri);
+                } else {
+                    context.getContentResolver().delete(Uri.parse(uri), null, null);
+                }
+            } catch (RuntimeException ex) {
+                Log.w(TAG, "Could not discard the old copy " + path, ex);
+            }
+        }
+    }
+
+    /** Leeway for the device clock against OneDrive's when comparing times. */
+    private static final long CLOCK_SKEW_MS = 5 * 60 * 1000L;
+
+    /**
+     * Whether a copy found where the file's copy belongs can hold its current version: it exists
+     * and was written after that version reached the drive. A copy of an older version (the
+     * file was replaced, and the app stopped before that copy was discarded) is older than it.
+     */
+    private static boolean isCopyOfVersion(@NonNull File copy, @Nullable Long versionMillis) {
+        if (!copy.isFile()) return false; // gone, or trashed (Android renames trashed files)
+        if (versionMillis == null || versionMillis <= 0) return true; // unknown: trust the name
+        final long written = copy.lastModified();
+        return written == 0 || written >= versionMillis - CLOCK_SKEW_MS;
     }
 
     /** Where {@link OfflineSaver} puts the copy of an entry in the shared Music folder. */
@@ -269,6 +390,7 @@ public final class OneDriveLibrary {
     @NonNull
     public synchronized List<Song> register(@NonNull List<DriveItem> items, @NonNull String folderPath) {
         ensureLoaded();
+        staleOwnCopies.clear(); // from a transaction that failed: the database still uses them
         final List<Song> songs = new ArrayList<>(items.size());
         final SQLiteDatabase w = db.getWritableDatabase();
         w.beginTransaction();
@@ -281,6 +403,7 @@ public final class OneDriveLibrary {
         } finally {
             w.endTransaction();
         }
+        discardStaleCopies();
         return songs;
     }
 
@@ -300,6 +423,7 @@ public final class OneDriveLibrary {
                                       @NonNull Collection<String> deletedIds) {
         ensureLoaded();
         ensureFoldersLoaded();
+        staleOwnCopies.clear(); // from a transaction that failed: the database still uses them
         final ScanResult result = new ScanResult();
         final SQLiteDatabase w = db.getWritableDatabase();
         w.beginTransaction();
@@ -382,6 +506,7 @@ public final class OneDriveLibrary {
         } finally {
             w.endTransaction();
         }
+        discardStaleCopies();
         for (final Entry e : bySongId.values()) {
             if (e.inLibrary) result.total++;
         }
@@ -449,8 +574,48 @@ public final class OneDriveLibrary {
 
     // --- files already on the device -------------------------------------------------------
 
-    /** Where {@link OfflineSaver} keeps its copies, in a MediaStore path. */
-    private static final String OWN_COPIES = "/" + android.os.Environment.DIRECTORY_MUSIC + "/" + OfflineSaver.ROOT_FOLDER + "/";
+    /**
+     * The folders where {@link OfflineSaver} keeps its copies (shared Music folder, the app's own
+     * external storage, its internal fallback), each ending with a separator. A path is an own
+     * copy only when it starts with one of them: a user folder that merely contains
+     * "Music/OneDrive" somewhere in its path is not Vinyl's.
+     */
+    @Nullable
+    private volatile List<String> ownCopyRoots;
+
+    @NonNull
+    private List<String> ownCopyRoots() {
+        List<String> roots = ownCopyRoots;
+        if (roots != null) return roots;
+        roots = new ArrayList<>();
+        final String folder = File.separator + OfflineSaver.ROOT_FOLDER + File.separator;
+        try {
+            roots.add(android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_MUSIC).getAbsolutePath() + folder);
+        } catch (RuntimeException ignored) {
+            // no shared storage
+        }
+        try {
+            for (final File dir : context.getExternalFilesDirs(android.os.Environment.DIRECTORY_MUSIC)) {
+                if (dir != null) roots.add(dir.getAbsolutePath() + folder);
+            }
+        } catch (RuntimeException ignored) {
+            // no external storage
+        }
+        roots.add(new File(context.getFilesDir(), "music").getAbsolutePath() + folder);
+        roots = java.util.Collections.unmodifiableList(roots);
+        ownCopyRoots = roots;
+        return roots;
+    }
+
+    /** Whether a path is one of {@link OfflineSaver}'s own copies. */
+    private boolean isOwnCopy(@Nullable String path) {
+        if (path == null) return false;
+        for (final String root : ownCopyRoots()) {
+            if (path.startsWith(root)) return true;
+        }
+        return false;
+    }
 
     /** Don't ask MediaStore again for a file that was not there a moment ago. */
     private static final long DEVICE_LOOKUP_RETRY_MS = 60_000;
@@ -487,7 +652,7 @@ public final class OneDriveLibrary {
                 if (path == null || !new File(path).isFile()) continue;
                 final DeviceFile file = new DeviceFile(path, ContentUris.withAppendedId(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, c.getLong(0)).toString());
-                if (!path.contains(OWN_COPIES)) return file;
+                if (!isOwnCopy(path)) return file;
                 if (!othersOnly && ownCopy == null) ownCopy = file;
             }
         } catch (RuntimeException ignored) {
@@ -514,7 +679,7 @@ public final class OneDriveLibrary {
                 final DeviceFile file = new DeviceFile(path, ContentUris.withAppendedId(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, c.getLong(0)).toString());
                 final DeviceFile[] slots = index.computeIfAbsent(name + '|' + c.getLong(3), k -> new DeviceFile[2]);
-                final int slot = path.contains(OWN_COPIES) ? 1 : 0;
+                final int slot = isOwnCopy(path) ? 1 : 0;
                 if (slots[slot] == null) slots[slot] = file;
             }
         } catch (RuntimeException ignored) {
@@ -554,7 +719,7 @@ public final class OneDriveLibrary {
      * phone → OneDrive → phone), keeps the original and deletes the copy, which only Vinyl made.
      */
     private void dropRedundantOwnCopy(@NonNull Entry e, @NonNull Map<String, DeviceFile[]> index) {
-        if (e.localPath == null || !e.localPath.contains(OWN_COPIES) || !ownCopiesChecked.add(e.itemId)) return;
+        if (e.localPath == null || !isOwnCopy(e.localPath) || !ownCopiesChecked.add(e.itemId)) return;
         final DeviceFile[] slots = index.get(e.name + '|' + e.size);
         final DeviceFile original = slots != null ? slots[0] : null;
         if (original == null || !new File(original.path).isFile()) return;
@@ -603,8 +768,11 @@ public final class OneDriveLibrary {
             }
         }
         if (localPath != null) {
+            // A device file shown as this OneDrive song: kept out of the library listing
+            final Song shadowed = discography.getShadowedSong(localPath);
+            if (shadowed != null) return shadowed;
             final Song song = discography.getSongByPath(localPath);
-            if (!song.equals(Song.EMPTY_SONG)) return song;
+            if (!song.equals(Song.EMPTY_SONG) && !isOneDriveId(song.id)) return song;
         }
         return null;
     }
@@ -708,6 +876,7 @@ public final class OneDriveLibrary {
             bySongId.put(e.songId, e);
             byItemId.put(e.itemId, e);
         } else {
+            forgetOutdatedCopy(e, item, v);
             w.update(Db.TABLE, v, Db.ITEM_ID + "=?", new String[]{item.id});
         }
         applyMetadata(e, item, folderPath);

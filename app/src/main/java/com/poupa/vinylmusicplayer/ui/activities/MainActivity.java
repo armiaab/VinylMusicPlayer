@@ -139,6 +139,13 @@ public class MainActivity extends AbsSlidingMusicPanelActivity implements Palett
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        // Files added to OneDrive while the app was in the background
+        OneDrive.onAppResumed(this);
+    }
+
+    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == APP_INTRO_REQUEST) {

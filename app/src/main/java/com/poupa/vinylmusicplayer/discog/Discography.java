@@ -83,6 +83,12 @@ public class Discography implements MusicServiceEventListener {
     private final MemCache cache = new MemCache();
     /** What each OneDrive song in the cache was added with, to skip unchanged ones (guarded by cache). */
     private final Map<Long, String> oneDriveSignatures = new HashMap<>();
+    /**
+     * Local songs left out of the library because a OneDrive song stands for the same file (a
+     * recording backed up to OneDrive is listed in its OneDrive folder), by path. Kept for the
+     * actions that need the local song (guarded by cache).
+     */
+    private final Map<String, Song> shadowedSongs = new HashMap<>();
 
     private final Map<AbsMusicServiceActivity, Handler> attachedActivitiesAndQueue = new HashMap<>();
     private static final String TASK_QUEUE_COALESCENCE_TOKEN = "Discography.triggerSyncWithMediaStore";
@@ -180,6 +186,7 @@ public class Discography implements MusicServiceEventListener {
         Song song;
         synchronized (cache) {
             song = cache.songsById.get(songId);
+            if (song == null) song = shadowedSongById(songId);
         }
         if (song == null && OneDriveLibrary.isOneDriveId(songId)) {
             // A OneDrive song kept in a queue, history or play count (looked up outside the
@@ -198,7 +205,9 @@ public class Discography implements MusicServiceEventListener {
         final ArrayList<Song> lookups = new ArrayList<>(songIds.size());
         synchronized (cache) {
             for (Long id : songIds) {
-                lookups.add(cache.songsById.get(id));
+                final Song song = cache.songsById.get(id);
+                // A local song shown as its OneDrive song is still a song: keep it in playlists
+                lookups.add(song != null ? song : shadowedSongById(id));
             }
         }
         for (int i = 0; i < songIds.size(); i++) {
@@ -446,7 +455,7 @@ public class Discography implements MusicServiceEventListener {
         final String startPath = FileUtil.safeGetCanonicalPath(startDirectory);
         final Predicate<Song> isNotWhiteListed = (s) -> {
             if (PreferenceUtil.getInstance().getWhitelistEnabled()) {
-                return !s.data.startsWith(startPath);
+                return !isInside(s.data, startPath);
             }
             return false;
         };
@@ -455,7 +464,7 @@ public class Discography implements MusicServiceEventListener {
         final ArrayList<String> blackListedPaths = BlacklistStore.getInstance(context).getPaths();
         final Predicate<Song> isBlackListed = (s) -> {
             for (final String path : blackListedPaths) {
-                if (s.data.startsWith(path)) return true;
+                if (isInside(s.data, path)) return true;
             }
             return false;
         };
@@ -496,6 +505,13 @@ public class Discography implements MusicServiceEventListener {
                     ready = new PreparedSong(candidates.get(i), false);
                 }
                 if (ready == null) continue; // zombie
+                synchronized (cache) {
+                    if (shadowedSongs.containsKey(ready.song.data)) {
+                        // Shown as its OneDrive song: keep it up to date, out of the listing
+                        shadowedSongs.put(ready.song.data, ready.song);
+                        continue;
+                    }
+                }
 
                 final Song matchedSong = getOrAddSong(ready.song, counters, ready.tagsRead);
                 importedSongIds.add(matchedSong.id);
@@ -621,6 +637,36 @@ public class Discography implements MusicServiceEventListener {
         cache.clear();
         synchronized (cache) {
             oneDriveSignatures.clear();
+            shadowedSongs.clear();
+        }
+    }
+
+    /**
+     * Whether {@code path} is {@code root} itself or inside the folder {@code root}: a sibling
+     * that only shares the prefix ("/music-old" for "/music") is not.
+     */
+    static boolean isInside(@NonNull final String path, @NonNull final String root) {
+        if (!path.startsWith(root)) return false;
+        return path.length() == root.length()
+                || root.endsWith("/")
+                || path.startsWith("/", root.length());
+    }
+
+    /** Guarded by cache. Few songs: a plain search. */
+    @Nullable
+    private Song shadowedSongById(final long songId) {
+        if (shadowedSongs.isEmpty()) return null;
+        for (final Song song : shadowedSongs.values()) {
+            if (song.id == songId) return song;
+        }
+        return null;
+    }
+
+    /** The local song of a file shown as a OneDrive song, or null. */
+    @Nullable
+    public Song getShadowedSong(@NonNull final String path) {
+        synchronized (cache) {
+            return shadowedSongs.get(path);
         }
     }
 
@@ -628,8 +674,10 @@ public class Discography implements MusicServiceEventListener {
      * Shows exactly these OneDrive songs in the library (Songs, Albums, Artists, Genres, search).
      * They live in memory only: the OneDrive library keeps them, and puts them back after a
      * restart or a reset. Unchanged songs are left as they are.
+     *
+     * @param shadowedPaths local files these OneDrive songs stand for: left out of the library
      */
-    public void replaceOneDriveSongs(@NonNull final Collection<Song> songs) {
+    public void replaceOneDriveSongs(@NonNull final Collection<Song> songs, @NonNull final Set<String> shadowedPaths) {
         boolean changed = false;
         synchronized (cache) {
             final Map<Long, Song> incoming = new HashMap<>();
@@ -645,6 +693,26 @@ public class Discography implements MusicServiceEventListener {
                     changed = true;
                 }
             }
+
+            // Local files no longer stood for by a OneDrive song come back (if still there)
+            for (final java.util.Iterator<Map.Entry<String, Song>> it = shadowedSongs.entrySet().iterator(); it.hasNext(); ) {
+                final Map.Entry<String, Song> entry = it.next();
+                if (shadowedPaths.contains(entry.getKey())) continue;
+                it.remove();
+                if (new File(entry.getKey()).exists() && !cache.songsById.containsKey(entry.getValue().id)) {
+                    addSong(entry.getValue(), true);
+                    changed = true;
+                }
+            }
+            // ...and those a OneDrive song stands for leave the listing
+            for (final String path : shadowedPaths) {
+                final Song local = cache.songsByPath.get(path);
+                if (local == null || OneDriveLibrary.isOneDriveId(local.id)) continue;
+                cache.removeSongById(local.id);
+                shadowedSongs.put(path, local);
+                changed = true;
+            }
+
             for (final Song song : songs) {
                 if (cache.songsById.containsKey(song.id)) continue;
                 final String signature = oneDriveSignature(song); // before addSong normalizes names

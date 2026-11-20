@@ -164,6 +164,11 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
     private boolean pausedByTransientLossOfFocus;
     /** A OneDrive song is loading before it can play (shown as buffering in the media session). */
     private volatile boolean buffering;
+    /**
+     * Counts {@link #pause()} calls (pause, stop, quit, focus loss...): a OneDrive song that was
+     * still buffering when one came must not start playing once it is ready.
+     */
+    private final java.util.concurrent.atomic.AtomicInteger pauseRequests = new java.util.concurrent.atomic.AtomicInteger();
 
     private PlayingNotification playingNotification;
     private IdleNotification idleNotification;
@@ -325,7 +330,7 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
                 String action = intent.getAction();
                 switch (action) {
                     case ACTION_TOGGLE_PAUSE:
-                        if (isPlaying()) {
+                        if (isPlaying() || buffering) {
                             pause();
                         } else {
                             play();
@@ -1075,6 +1080,8 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
         // Runs on the playback thread, without the service lock: buffer a OneDrive song here so
         // that preparing it under the lock never waits on the network
         final Song song = getSongAt(position);
+        final int pausesBefore = pauseRequests.get();
+        final BooleanSupplier pausedMeanwhile = () -> pauseRequests.get() != pausesBefore;
         if (OneDrive.needsBuffering(song)) {
             // Switch to the chosen song right away: the previous one stops, and the chosen one's
             // title and cover show (as "buffering" on the lock screen) while it loads
@@ -1092,27 +1099,35 @@ public class MusicService extends MediaBrowserServiceCompat implements SharedPre
                     playbackHandler.hasMessages(PLAY_SONG) || playbackHandler.hasMessages(SET_POSITION);
             final boolean ready;
             try {
-                ready = OneDrive.awaitReady(song, anotherSongChosen, progress::onProgress);
+                ready = OneDrive.awaitReady(song,
+                        () -> anotherSongChosen.getAsBoolean() || pausedMeanwhile.getAsBoolean(),
+                        progress::onProgress);
             } finally {
                 progress.finish();
                 buffering = false;
             }
             if (!ready) {
                 if (!anotherSongChosen.getAsBoolean()) {
-                    SafeToast.show(this, OneDrive.failureMessage(this, song));
+                    // Paused while buffering: the download goes on, play resumes it
+                    if (!pausedMeanwhile.getAsBoolean()) SafeToast.show(this, OneDrive.failureMessage(this, song));
                     notifyChange(PLAY_STATE_CHANGED); // no longer buffering
                 }
                 return;
             }
         }
         if (openTrackAndPrepareNextAt(position)) {
-            play();
+            if (pausedMeanwhile.getAsBoolean()) {
+                notifyChange(PLAY_STATE_CHANGED); // ready, but the user paused: stay paused
+            } else {
+                play();
+            }
         } else {
             SafeToast.show(this, getResources().getString(R.string.unplayable_file));
         }
     }
 
     public void pause() {
+        pauseRequests.incrementAndGet(); // also stops a OneDrive song from starting once buffered
         synchronized (this) {
             pausedByTransientLossOfFocus = false;
             if (playback.isPlaying()) {

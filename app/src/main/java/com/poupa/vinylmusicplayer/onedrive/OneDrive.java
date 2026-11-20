@@ -43,6 +43,12 @@ public final class OneDrive {
     /** Automatic rescans (after the local library is synced) happen at most this often. */
     private static final long AUTO_SCAN_INTERVAL_MS = 15 * 60 * 1000L;
 
+    /**
+     * Rescans when the app comes back to the foreground happen at most this often. A delta scan
+     * with nothing new is a single small request.
+     */
+    private static final long RESUME_SCAN_INTERVAL_MS = 60 * 1000L;
+
     /** Library scans and library updates run one at a time, in order, in the background. */
     private static final ExecutorService LIBRARY_SYNC = Executors.newSingleThreadExecutor(runnable -> {
         final Thread thread = new Thread(() -> {
@@ -136,7 +142,9 @@ public final class OneDrive {
         // One at a time: an older snapshot must never overwrite a newer one
         synchronized (PUBLISH_LOCK) {
             try {
-                Discography.getInstance().replaceOneDriveSongs(library().librarySongs());
+                final OneDriveLibrary lib = library();
+                final List<Song> songs = lib.librarySongs();
+                Discography.getInstance().replaceOneDriveSongs(songs, lib.shadowedPaths());
             } catch (RuntimeException e) {
                 OopsHandler.collectStackTrace(e);
             }
@@ -165,8 +173,10 @@ public final class OneDrive {
         publishToLibrary();
         if (reset) {
             scanLibrary(app, true, true);
-        } else if (OneDriveAuth.isSignedIn(app) && PENDING_SCANS.get() == 0) {
+        } else if (OneDriveAuth.isSignedIn(app) && PENDING_SCANS.get() == 0
+                && PROBE_QUEUED.compareAndSet(false, true)) {
             libraryTask(() -> {
+                PROBE_QUEUED.set(false);
                 if (scanner().isStale(AUTO_SCAN_INTERVAL_MS)) {
                     scanLibrary(app, false, false);
                 } else {
@@ -179,8 +189,33 @@ public final class OneDrive {
         }
     }
 
+    /**
+     * The app came to the foreground: picks up files added to the drive meanwhile. Without this,
+     * a new file only reached the library after an app restart or a change in the local library
+     * (and then only once the last scan was 15 minutes old), or from Refresh in the OneDrive tab.
+     */
+    public static void onAppResumed(@NonNull Context context) {
+        if (!isAvailable()) return;
+        final Context app = context.getApplicationContext();
+        if (!OneDriveAuth.isSignedIn(app) || PENDING_SCANS.get() > 0) return;
+        libraryTask(() -> {
+            // Before the first scan completes, onSignedIn / the library sync start a full one
+            if (scanner().hasScanned() && scanner().isStale(RESUME_SCAN_INTERVAL_MS)) {
+                scanLibrary(app, false, false);
+            }
+        });
+    }
+
     /** Files read at once while looking for durations. */
     private static final int PROBE_THREADS = 4;
+
+    /**
+     * A duration pass is waiting on the library thread. Every change of the local library asks
+     * for one; without coalescing they piled up on that single thread, and a scan (including
+     * Refresh) had to wait behind all of them before new drive files could show up.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean PROBE_QUEUED =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     /**
      * Reads the duration of library songs that Graph gave none (common for recordings, and for
