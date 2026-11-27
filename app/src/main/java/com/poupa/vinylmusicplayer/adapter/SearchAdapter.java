@@ -19,6 +19,7 @@ import com.poupa.vinylmusicplayer.glide.GlideApp;
 import com.poupa.vinylmusicplayer.glide.VinylGlideExtension;
 import com.poupa.vinylmusicplayer.helper.MusicPlayerRemote;
 import com.poupa.vinylmusicplayer.helper.menu.SongMenuHelper;
+import com.poupa.vinylmusicplayer.loader.SongLoader;
 import com.poupa.vinylmusicplayer.model.Album;
 import com.poupa.vinylmusicplayer.model.Artist;
 import com.poupa.vinylmusicplayer.model.Song;
@@ -208,9 +209,23 @@ public class SearchAdapter extends RecyclerView.Adapter<SearchAdapter.ViewHolder
                             ));
                     break;
                 case SONG:
-                    ArrayList<Song> playList = new ArrayList<>();
-                    playList.add((Song) item);
-                    MusicPlayerRemote.enqueueSongsWithConfirmation(activity, playList, 0);
+                    // Queue the whole library (same order as the Songs tab), starting at the tapped song,
+                    // so playback continues through all music instead of stopping after the match
+                    final Song song = (Song) item;
+                    final ArrayList<Song> playList = SongLoader.getAllSongs();
+                    int position = -1;
+                    for (int i = 0; i < playList.size(); i++) {
+                        if (playList.get(i).id == song.id) {
+                            position = i;
+                            break;
+                        }
+                    }
+                    if (position < 0) {
+                        // Not in the local library (e.g. a OneDrive-only result): play it first, then the library
+                        playList.add(0, song);
+                        position = 0;
+                    }
+                    MusicPlayerRemote.enqueueSongsWithConfirmation(activity, playList, position);
                     break;
             }
         }
