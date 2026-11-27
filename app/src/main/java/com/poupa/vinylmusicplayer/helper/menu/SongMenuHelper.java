@@ -11,6 +11,7 @@ import androidx.fragment.app.FragmentActivity;
 
 import com.poupa.vinylmusicplayer.R;
 import com.poupa.vinylmusicplayer.dialogs.AddToPlaylistDialog;
+import com.poupa.vinylmusicplayer.dialogs.ResetPlayCountsDialog;
 import com.poupa.vinylmusicplayer.dialogs.SongDetailDialog;
 import com.poupa.vinylmusicplayer.dialogs.helper.DeleteSongsHelper;
 import com.poupa.vinylmusicplayer.helper.MusicPlayerRemote;
@@ -74,6 +75,11 @@ public class SongMenuHelper {
             return true;
         } else if (menuItemId == R.id.action_go_to_artist) {
             NavigationUtil.goToArtist(activity, song.getArtistNames());
+            return true;
+        } else if (menuItemId == R.id.action_reset_play_count) {
+            if (song.id != -1) {
+                ResetPlayCountsDialog.create(song).show(activity.getSupportFragmentManager(), "RESET_PLAY_COUNTS");
+            }
             return true;
         }
         return false;

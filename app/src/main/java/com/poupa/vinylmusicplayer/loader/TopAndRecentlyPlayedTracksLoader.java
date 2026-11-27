@@ -82,8 +82,10 @@ public class TopAndRecentlyPlayedTracksLoader {
         if (!enabled) {return new ArrayList<>();}
 
         final int NUMBER_OF_TOP_TRACKS = 100;
-        try (Cursor cursor = SongPlayCountStore.getInstance(context).getTopPlayedResults(NUMBER_OF_TOP_TRACKS)) {
-            ArrayList<Long> songIds = StoreLoader.getIdsFromCursor(cursor, SongPlayCountStore.SongPlayCountColumns.ID);
+        try (Cursor cursor = SongPlayCountStore.getInstance(context).getTopPlayedResults(
+                NUMBER_OF_TOP_TRACKS, PreferenceUtil.getInstance().getTopTracksWindow(),
+                System.currentTimeMillis())) {
+            ArrayList<Long> songIds = StoreLoader.getIdsFromCursor(cursor, SongPlayCountStore.Columns.ID);
             Discography discography = Discography.getInstance();
             return discography.getSongsFromIdsAndCleanupOrphans(songIds, null);
         } catch (SQLiteException|IllegalStateException exception) {

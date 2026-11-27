@@ -1,6 +1,5 @@
 package com.poupa.vinylmusicplayer.ui.activities.base;
 
-import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.media.AudioManager;
@@ -9,6 +8,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.View;
+
+import java.util.Arrays;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -29,6 +30,7 @@ public abstract class AbsBaseActivity extends AbsThemeActivity {
     private boolean hadPermissions;
     private String[] permissions;
     private String permissionDeniedMessage;
+    private Snackbar permissionSnackbar;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -53,6 +55,7 @@ public abstract class AbsBaseActivity extends AbsThemeActivity {
     protected void onResume() {
         super.onResume();
         final boolean hasPermissions = hasPermissions();
+        if (hasPermissions) dismissPermissionMessage();
         if (hasPermissions != hadPermissions) {
             hadPermissions = hasPermissions;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -63,6 +66,13 @@ public abstract class AbsBaseActivity extends AbsThemeActivity {
 
     protected void onHasPermissionsChanged(boolean hasPermissions) {
         // implemented by sub classes
+    }
+
+    private void dismissPermissionMessage() {
+        if (permissionSnackbar != null) {
+            permissionSnackbar.dismiss();
+            permissionSnackbar = null;
+        }
     }
 
     @Nullable
@@ -89,8 +99,9 @@ public abstract class AbsBaseActivity extends AbsThemeActivity {
     }
 
     protected boolean hasPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && permissions != null) {
-            for (String permission : permissions) {
+        final String[] required = getRequiredPermissions();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && required != null) {
+            for (String permission : required) {
                 if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
                     return false;
                 }
@@ -99,18 +110,31 @@ public abstract class AbsBaseActivity extends AbsThemeActivity {
         return true;
     }
 
+    /**
+     * The subset of {@link #getPermissionsToRequest()} the activity cannot work without.
+     * Denying any other requested permission is not reported as a failure.
+     */
+    @Nullable
+    protected String[] getRequiredPermissions() {
+        return permissions;
+    }
+
     @Override
     public void onRequestPermissionsResult(final int requestCode, @NonNull final String[] permissions, @NonNull final int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == PERMISSION_REQUEST) {
-            for (final int grantResult : grantResults) {
-                if (grantResult != PackageManager.PERMISSION_GRANTED) {
+            final String[] required = getRequiredPermissions();
+            for (int i = 0; i < grantResults.length && i < permissions.length; i++) {
+                if (grantResults[i] != PackageManager.PERMISSION_GRANTED
+                        && required != null && Arrays.asList(required).contains(permissions[i])) {
                     final String message = getPermissionDeniedMessage();
                     try {
                         final View container = getSnackBarContainer();
+                        dismissPermissionMessage();
                         final Snackbar snackbar = Snackbar.make(container, message, BaseTransientBottomBar.LENGTH_INDEFINITE);
+                        permissionSnackbar = snackbar;
 
-                        if (ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                        if (ActivityCompat.shouldShowRequestPermissionRationale(this, permissions[i])) {
                             //User has denied from permission dialog
                             snackbar.setAction(R.string.action_grant, view -> requestPermissions())
                                     .setActionTextColor(ThemeStore.accentColor(this))
@@ -139,8 +163,9 @@ public abstract class AbsBaseActivity extends AbsThemeActivity {
                     }
                 }
             }
-            hadPermissions = true;
-            onHasPermissionsChanged(true);
+            hadPermissions = hasPermissions();
+            if (hadPermissions) dismissPermissionMessage();
+            onHasPermissionsChanged(hadPermissions);
         }
     }
 }

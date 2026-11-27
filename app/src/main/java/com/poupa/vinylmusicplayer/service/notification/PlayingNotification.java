@@ -1,6 +1,9 @@
 package com.poupa.vinylmusicplayer.service.notification;
 
 import android.app.Notification;
+import android.content.pm.ServiceInfo;
+
+import androidx.core.app.ServiceCompat;
 
 public abstract class PlayingNotification extends AbsNotification {
     private static final int NOTIFICATION_ID = 1;
@@ -16,6 +19,7 @@ public abstract class PlayingNotification extends AbsNotification {
     }
 
     void updateImpl(Notification notification) {
-        service.startForeground(NOTIFICATION_ID, notification);
+        ServiceCompat.startForeground(service, NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
     }
 }

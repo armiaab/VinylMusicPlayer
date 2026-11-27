@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="search_in_progress">Searching…</string>
+    <string name="search_error">Search failed. Submit your search to retry.</string>
     <string name="what_do_you_want_to_share">What do you want to share?</string>
     <string name="currently_listening_to_x_by_x">Currently listening to %1$s by %2$s.</string>
     <string name="the_audio_file">The audio file</string>
@@ -48,6 +50,8 @@
     <string name="songs">Songs</string>
     <string name="playlists">Playlists</string>
     <string name="unplayable_file">Couldn\u2019t play this song.</string>
+    <string name="unplayable_file_skipped">Couldn\u2019t play \u201c%1$s\u201d, skipping.</string>
+    <string name="too_many_unplayable_files">Too many songs couldn\u2019t be played. Stopping.</string>
     <string name="biography_unavailable">Couldn\u2019t find a biography entry for this artist.</string>
     <string name="wiki_unavailable">Couldn\u2019t find a wiki entry for this album.</string>
     <string name="biography">Biography</string>
@@ -293,6 +297,7 @@
     <string name="nothing_to_scan">Nothing to scan.</string>
     <string name="scanned_files">Scanned %1$d of %2$d files.</string>
     <string name="could_not_scan_files">Could not scan %d files.</string>
+    <string name="library_scan_failed">Could not read the music library. Check audio permissions and storage, then try again.</string>
     <string name="scanning_x_songs_added">"%1$d tracks added"</string>
     <string name="scanning_x_songs_updated">"%1$d tracks updated"</string>
     <string name="scanning_x_songs_removed">"%1$d tracks removed"</string>

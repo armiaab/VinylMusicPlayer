@@ -1,10 +1,14 @@
 package com.poupa.vinylmusicplayer.service;
 
+import android.database.sqlite.SQLiteException;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
+
+import com.poupa.vinylmusicplayer.util.OopsHandler;
 
 import java.lang.ref.WeakReference;
 
@@ -23,9 +27,16 @@ class QueueSaveHandler extends Handler {
     @Override
     public void handleMessage(@NonNull Message msg) {
         final MusicService service = mService.get();
-        switch (msg.what) {
-            case SAVE_QUEUES -> service.saveQueuesImpl();
-            case RESTORE_QUEUES -> service.restoreQueuesAndPosition();
+        if (service == null) return;
+        try {
+            switch (msg.what) {
+                case SAVE_QUEUES -> service.saveQueuesImpl();
+                case RESTORE_QUEUES -> service.restoreQueuesAndPosition();
+            }
+        } catch (SQLiteException failure) {
+            // The store has already rolled back. Keep playback and future saves alive.
+            Log.e("QueueSaveHandler", "Could not persist or restore the playback queue", failure);
+            OopsHandler.collectStackTrace(failure);
         }
     }
 }

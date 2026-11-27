@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.os.IBinder;
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 import androidx.annotation.Nullable;
 
 import com.poupa.vinylmusicplayer.R;
@@ -95,8 +96,9 @@ public abstract class AbsMusicServiceActivity extends AbsBaseActivity implements
             filter.addAction(MusicService.QUEUE_CHANGED);
             filter.addAction(MusicService.MEDIA_STORE_CHANGED);
             filter.addAction(MusicService.FAVORITE_STATE_CHANGED);
+            filter.addAction(MusicService.STATISTICS_CHANGED);
 
-            registerReceiver(musicStateReceiver, filter);
+            ContextCompat.registerReceiver(this, musicStateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
 
             receiverRegistered = true;
         }
@@ -159,6 +161,15 @@ public abstract class AbsMusicServiceActivity extends AbsBaseActivity implements
     }
 
     @Override
+    public void onStatisticsChanged() {
+        for (MusicServiceEventListener listener : mMusicServiceEventListeners) {
+            if (listener != null) {
+                listener.onStatisticsChanged();
+            }
+        }
+    }
+
+    @Override
     public void onRepeatModeChanged() {
         for (MusicServiceEventListener listener : mMusicServiceEventListeners) {
             if (listener != null) {
@@ -209,6 +220,9 @@ public abstract class AbsMusicServiceActivity extends AbsBaseActivity implements
                     case MusicService.MEDIA_STORE_CHANGED:
                         activity.onMediaStoreChanged();
                         break;
+                    case MusicService.STATISTICS_CHANGED:
+                        activity.onStatisticsChanged();
+                        break;
                 }
             }
         }
@@ -219,7 +233,18 @@ public abstract class AbsMusicServiceActivity extends AbsBaseActivity implements
         super.onHasPermissionsChanged(hasPermissions);
         Intent intent = new Intent(MusicService.MEDIA_STORE_CHANGED);
         intent.putExtra("from_permissions_changed", true); // just in case we need to know this at some point
-        sendBroadcast(intent);
+        sendBroadcast(intent.setPackage(getPackageName()));
+    }
+
+    @Nullable
+    @Override
+    protected String[] getRequiredPermissions() {
+        if (Build.VERSION.SDK_INT >= VERSION_CODES.TIRAMISU) {
+            // Images (covers) and notifications are optional: denying them must not
+            // be reported as "the app cannot work".
+            return new String[] { Manifest.permission.READ_MEDIA_AUDIO };
+        }
+        return super.getRequiredPermissions();
     }
 
     @Nullable

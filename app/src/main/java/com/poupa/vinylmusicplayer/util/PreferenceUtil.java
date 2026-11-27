@@ -14,11 +14,16 @@ import androidx.annotation.StyleRes;
 import androidx.core.util.Pair;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import com.google.gson.reflect.TypeToken;
 import com.poupa.vinylmusicplayer.App;
 import com.poupa.vinylmusicplayer.R;
 import com.poupa.vinylmusicplayer.model.CategoryInfo;
+import com.poupa.vinylmusicplayer.model.TopTracksWindow;
 import com.poupa.vinylmusicplayer.ui.fragments.mainactivity.folders.FoldersFragment;
 import com.poupa.vinylmusicplayer.ui.fragments.player.NowPlayingScreen;
 
@@ -30,6 +35,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -100,6 +106,10 @@ public final class PreferenceUtil {
     public static final String NOT_RECENTLY_PLAYED_CUTOFF_V2 = PrefKey.exportableKey("not_recently_played_interval_v2");
     public static final String MAINTAIN_TOP_TRACKS_PLAYLIST = PrefKey.exportableKey("maintain_top_tracks_playlist");
     public static final String MAINTAIN_SKIPPED_SONGS_PLAYLIST = PrefKey.exportableKey("maintain_skipped_songs_playlist");
+
+    /** Rolling window used by the most-played views; one of the TopTracksWindow tokens. */
+    public static final String TOP_TRACKS_WINDOW = PrefKey.exportableKey("top_tracks_window");
+    public static final String TOP_TRACKS_WINDOW_DEFAULT = "52w";
 
     private static final String LAST_SLEEP_TIMER_VALUE = PrefKey.exportableKey("last_sleep_timer_value");
     private static final String NEXT_SLEEP_TIMER_ELAPSED_REALTIME = PrefKey.nonExportableKey("next_sleep_timer_elapsed_real_time");
@@ -734,6 +744,18 @@ public final class PreferenceUtil {
         return mPreferences.getBoolean(MAINTAIN_TOP_TRACKS_PLAYLIST, true);
     }
 
+    public void setTopTracksWindow(@NonNull final TopTracksWindow window) {
+        mPreferences.edit()
+                .putString(TOP_TRACKS_WINDOW, window.preferenceValue)
+                .apply();
+    }
+
+    @NonNull
+    public TopTracksWindow getTopTracksWindow() {
+        return TopTracksWindow.fromPreference(
+                mPreferences.getString(TOP_TRACKS_WINDOW, TOP_TRACKS_WINDOW_DEFAULT));
+    }
+
     public void setMaintainSkippedSongsPlaylist(final boolean value) {
         mPreferences.edit()
                 .putBoolean(MAINTAIN_SKIPPED_SONGS_PLAYLIST, value)
@@ -793,18 +815,36 @@ public final class PreferenceUtil {
     public ArrayList<CategoryInfo> getLibraryCategoryInfos() {
         String data = mPreferences.getString(LIBRARY_CATEGORIES, null);
         if (data != null) {
-            final Gson gson = new Gson();
-            final Type collectionType = new TypeToken<ArrayList<CategoryInfo>>() {
-            }.getType();
-
             try {
-                return gson.fromJson(data, collectionType);
-            } catch (final JsonSyntaxException e) {
-                e.printStackTrace();
+                return parseLibraryCategoryInfos(data);
+            } catch (final RuntimeException invalidCategories) {
+                // Recover from preferences written by older versions or invalid backups.
+                return getDefaultLibraryCategoryInfos();
             }
         }
 
         return getDefaultLibraryCategoryInfos();
+    }
+
+    public static ArrayList<CategoryInfo> parseLibraryCategoryInfos(String data) {
+        JsonArray array = JsonParser.parseString(data).getAsJsonArray();
+        ArrayList<CategoryInfo> categories = new ArrayList<>();
+        EnumSet<CategoryInfo.Category> seen = EnumSet.noneOf(CategoryInfo.Category.class);
+        boolean hasVisibleCategory = false;
+        for (JsonElement element : array) {
+            JsonObject entry = element.getAsJsonObject();
+            JsonPrimitive name = entry.getAsJsonPrimitive("category");
+            JsonPrimitive visible = entry.getAsJsonPrimitive("visible");
+            if (name == null || !name.isString() || visible == null || !visible.isBoolean()) {
+                throw new IllegalArgumentException("Invalid library category");
+            }
+            CategoryInfo.Category category = CategoryInfo.Category.valueOf(name.getAsString());
+            if (!seen.add(category)) throw new IllegalArgumentException("Duplicate library category");
+            categories.add(new CategoryInfo(category, visible.getAsBoolean()));
+            hasVisibleCategory |= visible.getAsBoolean();
+        }
+        if (!hasVisibleCategory) throw new IllegalArgumentException("No visible library category");
+        return categories;
     }
 
     public ArrayList<CategoryInfo> getDefaultLibraryCategoryInfos() {

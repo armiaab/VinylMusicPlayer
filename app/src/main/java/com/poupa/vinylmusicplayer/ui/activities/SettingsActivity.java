@@ -50,6 +50,8 @@ import com.poupa.vinylmusicplayer.preferences.PreAmpPreferenceDialog;
 import com.poupa.vinylmusicplayer.preferences.SharedPreferencesImporter;
 import com.poupa.vinylmusicplayer.preferences.SmartPlaylistPreference;
 import com.poupa.vinylmusicplayer.preferences.SmartPlaylistPreferenceDialog;
+import com.poupa.vinylmusicplayer.preferences.TopTracksWindowPreference;
+import com.poupa.vinylmusicplayer.preferences.TopTracksWindowPreferenceDialog;
 import com.poupa.vinylmusicplayer.preferences.SongConfirmationPreference;
 import com.poupa.vinylmusicplayer.service.MusicService;
 import com.poupa.vinylmusicplayer.ui.activities.base.AbsBaseActivity;
@@ -224,6 +226,8 @@ public class SettingsActivity extends AbsBaseActivity implements ColorChooserDia
                 return PreAmpPreferenceDialog.newInstance();
             } else if (preference instanceof SmartPlaylistPreference) {
                 return SmartPlaylistPreferenceDialog.newInstance(preference.getKey());
+            } else if (preference instanceof TopTracksWindowPreference) {
+                return TopTracksWindowPreferenceDialog.newInstance();
             } else if (preference instanceof ExportSettingsPreference) {
                 return ExportSettingsPreferenceDialog.newInstance();
             } else if (preference instanceof SongConfirmationPreference) {
@@ -588,7 +592,7 @@ public class SettingsActivity extends AbsBaseActivity implements ColorChooserDia
                     }
                 }
             } else if (TextUtils.equals(key, PreferenceUtil.WHITELIST_ENABLED)) {
-                getContext().sendBroadcast(new Intent(MusicService.MEDIA_STORE_CHANGED));
+                requireContext().sendBroadcast(new Intent(MusicService.MEDIA_STORE_CHANGED).setPackage(requireContext().getPackageName()));
             } else if (TextUtils.equals(key, PreferenceUtil.RECENTLY_PLAYED_CUTOFF_V2)
                     || TextUtils.equals(key, PreferenceUtil.NOT_RECENTLY_PLAYED_CUTOFF_V2)
                     || TextUtils.equals(key, PreferenceUtil.LAST_ADDED_CUTOFF_V2)

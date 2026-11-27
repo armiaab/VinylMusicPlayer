@@ -1,9 +1,11 @@
 package com.poupa.vinylmusicplayer.service.notification;
 
 import android.app.Notification;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.ServiceCompat;
 
 import com.poupa.vinylmusicplayer.R;
 
@@ -28,7 +30,8 @@ public class IdleNotification extends AbsNotification {
                     .setPriority(NotificationCompat.PRIORITY_LOW)
                     .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                     .build();
-            service.startForeground(NOTIFICATION_ID, notification);
+            ServiceCompat.startForeground(service, NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
         }
     }
 

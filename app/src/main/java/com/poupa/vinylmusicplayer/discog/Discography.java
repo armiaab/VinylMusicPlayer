@@ -19,6 +19,7 @@ import com.poupa.vinylmusicplayer.model.Song;
 import com.poupa.vinylmusicplayer.onedrive.OneDrive;
 import com.poupa.vinylmusicplayer.onedrive.OneDriveLibrary;
 import com.poupa.vinylmusicplayer.provider.BlacklistStore;
+import com.poupa.vinylmusicplayer.search.SearchSnapshot;
 import com.poupa.vinylmusicplayer.sort.SongSortOrder;
 import com.poupa.vinylmusicplayer.ui.activities.base.AbsMusicServiceActivity;
 import com.poupa.vinylmusicplayer.util.FileUtil;
@@ -89,6 +90,26 @@ public class Discography implements MusicServiceEventListener {
      * actions that need the local song (guarded by cache).
      */
     private final Map<String, Song> shadowedSongs = new HashMap<>();
+    private long searchRevision;
+
+    public long getSearchRevision() {
+        synchronized (cache) {
+            return searchRevision;
+        }
+    }
+
+    /** Capture only; normalization, full-album merging and sorting happen off this lock. */
+    public SearchSnapshot.Source captureSearchLibrary() {
+        synchronized (cache) {
+            List<Album> slices = new ArrayList<>();
+            for (Map<Long, MemCache.AlbumSlice> byArtist : cache.albumsByAlbumIdAndArtistId.values()) {
+                slices.addAll(byArtist.values());
+            }
+            return new SearchSnapshot.Source(searchRevision,
+                    new ArrayList<>(cache.songsById.values()),
+                    new ArrayList<>(cache.artistsById.values()), slices);
+        }
+    }
 
     private final Map<AbsMusicServiceActivity, Handler> attachedActivitiesAndQueue = new HashMap<>();
     private static final String TASK_QUEUE_COALESCENCE_TOKEN = "Discography.triggerSyncWithMediaStore";
@@ -414,6 +435,7 @@ public class Discography implements MusicServiceEventListener {
             song.genres = normalizedGenres;
 
             cache.addSong(song);
+            searchRevision++;
 
             if (!cacheOnly) {
                 database.addSong(song);
@@ -445,7 +467,18 @@ public class Discography implements MusicServiceEventListener {
     }
 
     SyncWithMediaStoreAsyncTask.Progress syncWithMediaStore(@NonNull final Consumer<SyncWithMediaStoreAsyncTask.Progress> progressUpdater) {
+        return syncWithMediaStore(progressUpdater, false);
+    }
+
+    SyncWithMediaStoreAsyncTask.Progress syncWithMediaStore(@NonNull final Consumer<SyncWithMediaStoreAsyncTask.Progress> progressUpdater, boolean reset) {
         final Context context = App.getInstance().getApplicationContext();
+        // A failed query must never be mistaken for an empty library, even on reset.
+        final ArrayList<Song> alienSongs = MediaStoreBridge.getAllSongs(context);
+        if (reset) {
+            synchronized (cache) {
+                clear();
+            }
+        }
 
         // Zombies are tracks that are removed but still indexed by MediaStore
         final Predicate<Song> isZombie = (s) -> !(new File(s.data)).exists();
@@ -470,7 +503,6 @@ public class Discography implements MusicServiceEventListener {
         };
 
         final SyncWithMediaStoreAsyncTask.Progress counters = new SyncWithMediaStoreAsyncTask.Progress();
-        final ArrayList<Song> alienSongs = MediaStoreBridge.getAllSongs(context);
         final Set<Long> importedSongIds = new HashSet<>();
 
         // The slow parts are file I/O: checking that each file still exists, and reading the tags
@@ -626,6 +658,7 @@ public class Discography implements MusicServiceEventListener {
         if (songIds.isEmpty()) return;
 
         for (final long songId : songIds) {
+            if (cache.songsById.containsKey(songId)) searchRevision++;
             cache.removeSongById(songId);
             database.removeSongById(songId);
         }
@@ -633,11 +666,12 @@ public class Discography implements MusicServiceEventListener {
     }
 
     void clear() {
-        database.clear();
-        cache.clear();
         synchronized (cache) {
+            database.clear();
+            cache.clear();
             oneDriveSignatures.clear();
             shadowedSongs.clear();
+            searchRevision++;
         }
     }
 
@@ -720,6 +754,7 @@ public class Discography implements MusicServiceEventListener {
                 oneDriveSignatures.put(song.id, signature);
                 changed = true;
             }
+            if (changed) searchRevision++;
         }
         if (changed) notifyDiscographyChanged();
     }
